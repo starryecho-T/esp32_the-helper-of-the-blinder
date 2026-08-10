@@ -1,0 +1,18 @@
+# IDE and build output
+.vscode/
+.idea/
+.pio/
+build/
+*.tmp
+*.bak
+*.log
+
+# Local configuration and secrets
+.env
+secrets.h
+secrets.txt
+local-config.json
+
+# OS files
+Thumbs.db
+.DS_Store
