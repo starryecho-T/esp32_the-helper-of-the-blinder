@@ -1,0 +1,52 @@
+.blockly-icon-warning .blocklyIconShape {
+  cursor: default;
+  fill: #ff5;
+  stroke-width: 1px;
+  stroke: #555;
+}
+
+.blockly-icon-warning .blocklyIconSymbol {
+  fill: #222;
+}
+
+.blocklyIconGroup .blocklyErrorIconOutline {
+  stroke: #000000;
+  stroke-width: 1px;
+  fill: #ff0000;
+}
+
+.blocklyIconGroup .blocklyErrorIconX {
+  stroke: #ffffff;
+  stroke-width: 2px;
+  stroke-linecap:round;
+  stroke-linejoin:round;
+  stroke-miterlimit:4;
+  fill: none;
+}
+
+.blocklybackpackFlyoutBackground {
+  fill: #ddd;
+  fill-opacity: .8;
+}
+
+.blocklybackpackImage:hover {
+  cursor: pointer;
+}
+
+.blocklyZoom:hover {
+  cursor: pointer;
+}
+
+.dyslexic .blocklyText,
+.dyslexic .blocklyFieldParameter,
+.dyslexic .goog-menuitem .goog-menuitem-content {
+  font-family: OpenDyslexic, Helvetica, Arial, sans-serif;
+}
+
+.blocklyMultiselect:hover {
+  cursor: pointer;
+}
+
+.blocklyTrash:hover {
+  cursor: pointer;
+}
