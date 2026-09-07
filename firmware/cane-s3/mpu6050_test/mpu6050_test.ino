@@ -24,7 +24,7 @@
 // ====================== MPU6050 参数 ======================
 #define MPU6050_ADDR 0x68
 #define SDA_PIN 21
-#define SCL_PIN 22
+#define SCL_PIN 20
 
 // ====================== 跌倒检测参数 ======================
 #define FALL_THRESHOLD 2.5    // 加速度合矢量阈值(g)，超过此值判定为撞击
