@@ -126,7 +126,7 @@ class RxCallbacks : public BLECharacteristicCallbacks {
     Serial.print("RX: ");
     Serial.println(value);
 
-    value.trim();
+    value.trim();//去掉字符串首尾的空格、换行符
 
     if (value.length() == 0) {
       return;
@@ -150,12 +150,12 @@ class RxCallbacks : public BLECharacteristicCallbacks {
       bool endOfCommand = false;
 
       if (i == value.length()) {
-        endOfCommand = true;
+        endOfCommand = true;//到达字符串末尾算一条命令结束
       } else {
-        char c = value.charAt(i);
+        char c = value.charAt(i);//取出当前字符
 
         if (c == '\n' || c == '\r') {
-          endOfCommand = true;
+          endOfCommand = true;//命令结束，开始截取
         }
       }
 
@@ -171,7 +171,7 @@ class RxCallbacks : public BLECharacteristicCallbacks {
       }
     }
   }
-};
+};//多条命令一起发，中间用换行符连接，依旧可以处理
 
 // =====================================================
 // BLE 发送字符串
