@@ -1,0 +1,26 @@
+智能盲杖交通灯识别后端
+
+1. 安装 Python 3.10/3.11。
+2. 在此目录运行：
+   pip install -r requirements.txt
+3. 启动：
+   python -m uvicorn server:app --host 0.0.0.0 --port 8000
+
+App Inventor 默认接口：
+http://192.168.43.248:8000/detect
+
+如果运行服务器的电脑/树莓派 IP 不是 192.168.43.248，需要在 App Inventor 的 Blocks 中把全局 TrafficURL 改成：
+http://你的设备IP:8000/detect
+
+浏览器可测试：
+http://你的设备IP:8000/health
+返回 OK 即表示服务器正常。
+
+接口输入：HTTP POST 原始图片二进制
+接口输出：
+RED|96%
+YELLOW|91%
+GREEN|95%
+NONE|0
+
+注意：YOLO 使用 COCO 的 traffic light 类别，再根据检测框中的颜色判断红/黄/绿。对于夜间、严重遮挡、远距离或强反光图片，建议后续用你自己的交通灯数据集训练专用模型以提高可靠性。
