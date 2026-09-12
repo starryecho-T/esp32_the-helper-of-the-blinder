@@ -3,8 +3,7 @@ from fastapi.responses import PlainTextResponse
 from ultralytics import YOLO
 import cv2
 import numpy as np
-import tempfile
-import os
+import requests
 
 app = FastAPI(title='Smart Cane Traffic Light Detector')
 
@@ -12,6 +11,10 @@ app = FastAPI(title='Smart Cane Traffic Light Detector')
 # The color is classified from the detected traffic-light crop.
 model = YOLO('yolov8n.pt')
 TRAFFIC_LIGHT_CLASS = 9  # COCO: traffic light
+
+# Head-mounted ESP32-CAM snapshot URL. Override with ?cam=<url>.
+CAMERA_DEFAULT_URL = 'http://10.155.212.227/capture'
+CAMERA_TIMEOUT = 5  # seconds
 
 
 def color_score(crop: np.ndarray):
@@ -40,14 +43,8 @@ def color_score(crop: np.ndarray):
     return color, confidence
 
 
-@app.get('/health', response_class=PlainTextResponse)
-def health():
-    return 'OK'
-
-
-@app.post('/detect', response_class=PlainTextResponse)
-async def detect(request: Request):
-    data = await request.body()
+def detect_from_bytes(data: bytes) -> str:
+    """Run the traffic-light pipeline on raw image bytes and return 'COLOR|NN%'."""
     if not data:
         raise HTTPException(status_code=400, detail='empty image')
 
@@ -83,5 +80,29 @@ async def detect(request: Request):
         return 'NONE|0'
 
     _, color, det_conf = best
-    # Keep two decimal places for the App Inventor client.
+    # Return the format expected by the App Inventor client: COLOR|NN%.
     return f'{color}|{det_conf * 100:.0f}%'
+
+
+@app.get('/health', response_class=PlainTextResponse)
+def health():
+    return 'OK'
+
+
+@app.get('/detect', response_class=PlainTextResponse)
+def detect_from_camera(cam: str = CAMERA_DEFAULT_URL):
+    """GET /detect?cam=<snapshot-url>: server pulls the image from the
+    ESP32-CAM by itself, so the app never has to upload a file."""
+    try:
+        r = requests.get(cam, timeout=CAMERA_TIMEOUT)
+        r.raise_for_status()
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f'camera unreachable: {exc}')
+    return detect_from_bytes(r.content)
+
+
+@app.post('/detect', response_class=PlainTextResponse)
+async def detect(request: Request):
+    data = await request.body()
+    return detect_from_bytes(data)
+
