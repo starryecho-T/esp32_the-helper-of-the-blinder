@@ -1,0 +1,1 @@
+<block type="global_declaration" id="37d8f6f518544e2b95d0146ebedda266" x="2766" y="64" xmlns="https://developers.google.com/blockly/xml"><field name="NAME">TrafficURL</field><value name="VALUE"><block type="text" id="ee45908bf44744e89dba14fd32874acf"><field name="TEXT">http://10.155.212.170:8000/detect</field></block></value></block>

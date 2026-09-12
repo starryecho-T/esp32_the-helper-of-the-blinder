@@ -1,0 +1,770 @@
+﻿=== TOP-LEVEL BLOCK #1 ===
+global_declaration |NAME=CameraURL
+  arg<VALUE>:
+    text |TEXT=http://192.168.43.248/capture
+=== TOP-LEVEL BLOCK #2 ===
+global_declaration |NAME=ServiceUUID
+  arg<VALUE>:
+    text |TEXT=6E400001-B5A3-F393-E0A9-E50E24DCCA9E
+=== TOP-LEVEL BLOCK #3 ===
+global_declaration |NAME=RXUUID
+  arg<VALUE>:
+    text |TEXT=6E400002-B5A3-F393-E0A9-E50E24DCCA9E
+=== TOP-LEVEL BLOCK #4 ===
+global_declaration |NAME=TXUUID
+  arg<VALUE>:
+    text |TEXT=6E400003-B5A3-F393-E0A9-E50E24DCCA9E
+=== TOP-LEVEL BLOCK #5 ===
+procedures_defnoreturn name=sendCommand |NAME=sendCommand |VAR0=commandText
+  do<STACK>:
+    controls_if
+      arg<IF0>:
+        logic_compare |OP=EQ
+          arg<A>:
+            lexical_variable_get |VAR=global isConnected
+          arg<B>:
+            logic_boolean |BOOL=TRUE
+      do<DO0>:
+        component_method |COMPONENT_SELECTOR=BluetoothLE1
+          arg<ARG0>:
+            lexical_variable_get |VAR=global ServiceUUID
+          arg<ARG1>:
+            lexical_variable_get |VAR=global RXUUID
+          arg<ARG2>:
+            logic_false |BOOL=FALSE
+          arg<ARG3>:
+            lexical_variable_get |VAR=commandText
+      do<ELSE>:
+        component_method |COMPONENT_SELECTOR=对话框1
+          arg<ARG0>:
+            text |TEXT=请先连接智能盲杖
+=== TOP-LEVEL BLOCK #6 ===
+global_declaration |NAME=selectedDevice
+  arg<VALUE>:
+    text |TEXT=
+=== TOP-LEVEL BLOCK #7 ===
+component_event |COMPONENT_SELECTOR=BluetoothLE1
+  do<DO>:
+    controls_forEach |VAR=项
+      arg<LIST>:
+        lexical_variable_get |VAR=stringValues
+      do<DO>:
+        component_set_get |COMPONENT_SELECTOR=接受数据调试标签 |PROP=Text
+          arg<VALUE>:
+            lexical_variable_get |VAR=项
+          >>>
+          procedures_callnoreturn |PROCNAME=解析状态
+            arg<ARG0>:
+              lexical_variable_get |VAR=项
+=== TOP-LEVEL BLOCK #8 ===
+global_declaration |NAME=isConnected
+  arg<VALUE>:
+    logic_false |BOOL=FALSE
+=== TOP-LEVEL BLOCK #9 ===
+component_event |COMPONENT_SELECTOR=刷新摄像头按钮
+  do<DO>:
+    component_set_get |COMPONENT_SELECTOR=摄像头模块 |PROP=HomeUrl
+      arg<VALUE>:
+        lexical_variable_get |VAR=global CameraURL
+      >>>
+      component_method |COMPONENT_SELECTOR=摄像头模块
+=== TOP-LEVEL BLOCK #10 ===
+global_declaration |NAME=TrafficURL
+  arg<VALUE>:
+    text |TEXT=http://10.155.212.170:8000/detect
+=== TOP-LEVEL BLOCK #11 ===
+component_event |COMPONENT_SELECTOR=Screen1
+  do<DO>:
+    component_set_get |COMPONENT_SELECTOR=扫描按钮 |PROP=Enabled
+      arg<VALUE>:
+        logic_boolean |BOOL=TRUE
+      >>>
+      component_set_get |COMPONENT_SELECTOR=断开连接按钮 |PROP=Enabled
+        arg<VALUE>:
+          logic_boolean |BOOL=FALSE
+        >>>
+        component_set_get |COMPONENT_SELECTOR=连接状态信息 |PROP=Text
+          arg<VALUE>:
+            text |TEXT=未连接
+          >>>
+          component_set_get |COMPONENT_SELECTOR=计时器1 |PROP=TimerEnabled
+            arg<VALUE>:
+              logic_boolean |BOOL=FALSE
+            >>>
+            lexical_variable_set |VAR=global isConnected
+              arg<VALUE>:
+                logic_false |BOOL=FALSE
+              >>>
+              lexical_variable_set |VAR=global selectedDevice
+                arg<VALUE>:
+                  text |TEXT=
+                >>>
+                component_set_get |COMPONENT_SELECTOR=当前设备信息 |PROP=Text
+                  arg<VALUE>:
+                    text |TEXT=未选择
+                  >>>
+                  component_set_get |COMPONENT_SELECTOR=切换日常模式 |PROP=Enabled
+                    arg<VALUE>:
+                      logic_boolean |BOOL=FALSE
+                    >>>
+                    component_set_get |COMPONENT_SELECTOR=切换夜间模式 |PROP=Enabled
+                      arg<VALUE>:
+                        logic_boolean |BOOL=FALSE
+                      >>>
+                      component_set_get |COMPONENT_SELECTOR=切换安静模式 |PROP=Enabled
+                        arg<VALUE>:
+                          logic_boolean |BOOL=FALSE
+                        >>>
+                        component_set_get |COMPONENT_SELECTOR=切换紧急模式 |PROP=Enabled
+                          arg<VALUE>:
+                            logic_boolean |BOOL=FALSE
+                          >>>
+                          component_set_get |COMPONENT_SELECTOR=紧急报警按钮 |PROP=Enabled
+                            arg<VALUE>:
+                              logic_boolean |BOOL=FALSE
+                            >>>
+                            component_set_get |COMPONENT_SELECTOR=摄像头模块 |PROP=HomeUrl
+                              arg<VALUE>:
+                                lexical_variable_get |VAR=global CameraURL
+                              >>>
+                              component_method |COMPONENT_SELECTOR=摄像头模块
+=== TOP-LEVEL BLOCK #12 ===
+global_declaration |NAME=selectedTrafficImage
+  arg<VALUE>:
+    text |TEXT=
+=== TOP-LEVEL BLOCK #13 ===
+component_event |COMPONENT_SELECTOR=开始交通灯识别
+  do<DO>:
+    controls_if
+      arg<IF0>:
+        logic_compare |OP=NEQ
+          arg<A>:
+            lexical_variable_get |VAR=global selectedTrafficImage
+          arg<B>:
+            text |TEXT=
+      do<DO0>:
+        component_set_get |COMPONENT_SELECTOR=交通灯识别结果 |PROP=Text
+          arg<VALUE>:
+            text |TEXT=识别中，请稍候……
+          >>>
+          component_set_get |COMPONENT_SELECTOR=交通灯识别接口 |PROP=Url
+            arg<VALUE>:
+              lexical_variable_get |VAR=global TrafficURL
+            >>>
+            component_method |COMPONENT_SELECTOR=交通灯识别接口
+              arg<ARG0>:
+                lexical_variable_get |VAR=global selectedTrafficImage
+      do<ELSE>:
+        component_method |COMPONENT_SELECTOR=对话框1
+          arg<ARG0>:
+            text |TEXT=请先导入一张道路图片
+=== TOP-LEVEL BLOCK #14 ===
+component_event |COMPONENT_SELECTOR=导入交通图片
+  do<DO>:
+    lexical_variable_set |VAR=global selectedTrafficImage
+      arg<VALUE>:
+        component_set_get |COMPONENT_SELECTOR=导入交通图片 |PROP=Selection
+      >>>
+      component_set_get |COMPONENT_SELECTOR=交通灯图片预览 |PROP=Picture
+        arg<VALUE>:
+          lexical_variable_get |VAR=global selectedTrafficImage
+        >>>
+        component_set_get |COMPONENT_SELECTOR=交通灯识别结果 |PROP=Text
+          arg<VALUE>:
+            text |TEXT=识别中，请稍候……
+          >>>
+          component_set_get |COMPONENT_SELECTOR=交通灯识别置信度 |PROP=Text
+            arg<VALUE>:
+              text |TEXT=置信度：--
+            >>>
+            component_set_get |COMPONENT_SELECTOR=交通灯识别接口 |PROP=Url
+              arg<VALUE>:
+                lexical_variable_get |VAR=global TrafficURL
+              >>>
+              component_method |COMPONENT_SELECTOR=交通灯识别接口
+                arg<ARG0>:
+                  lexical_variable_get |VAR=global selectedTrafficImage
+=== TOP-LEVEL BLOCK #15 ===
+component_event |COMPONENT_SELECTOR=切换日常模式
+  do<DO>:
+    procedures_callnoreturn |PROCNAME=sendCommand
+      arg<ARG0>:
+        text |TEXT=MODE:DAILY
+      >>>
+      component_set_get |COMPONENT_SELECTOR=当前工作模式文字提示 |PROP=Text
+        arg<VALUE>:
+          text |TEXT=正在切换为日常模式
+=== TOP-LEVEL BLOCK #16 ===
+procedures_defnoreturn name=解析状态 |NAME=解析状态 |VAR0=message
+  do<STACK>:
+    local_declaration_statement |VAR0=fields
+      arg<DECL0>:
+        text_split |OP=SPLIT
+          arg<TEXT>:
+            lexical_variable_get |VAR=message
+          arg<AT>:
+            text |TEXT=,
+      do<STACK>:
+        controls_forEach |VAR=field
+          arg<LIST>:
+            lexical_variable_get |VAR=fields
+          do<DO>:
+            local_declaration_statement |VAR0=parts
+              arg<DECL0>:
+                text_split |OP=SPLIT
+                  arg<TEXT>:
+                    lexical_variable_get |VAR=field
+                  arg<AT>:
+                    text |TEXT==
+              do<STACK>:
+                controls_if
+                  arg<IF0>:
+                    logic_compare |OP=EQ
+                      arg<A>:
+                        lists_select_item
+                          arg<LIST>:
+                            lexical_variable_get |VAR=parts
+                          arg<NUM>:
+                            math_number |NUM=1
+                      arg<B>:
+                        text |TEXT=MODE
+                  do<DO0>:
+                    controls_if
+                      arg<IF0>:
+                        logic_compare |OP=EQ
+                          arg<A>:
+                            lists_select_item
+                              arg<LIST>:
+                                lexical_variable_get |VAR=parts
+                              arg<NUM>:
+                                math_number |NUM=2
+                          arg<B>:
+                            text |TEXT=DAILY
+                      do<DO0>:
+                        component_set_get |COMPONENT_SELECTOR=当前工作模式 |PROP=Text
+                          arg<VALUE>:
+                            text |TEXT=日常模式
+                      >>>
+                      controls_if
+                        arg<IF0>:
+                          logic_compare |OP=EQ
+                            arg<A>:
+                              lists_select_item
+                                arg<LIST>:
+                                  lexical_variable_get |VAR=parts
+                                arg<NUM>:
+                                  math_number |NUM=2
+                            arg<B>:
+                              text |TEXT=NIGHT
+                        do<DO0>:
+                          component_set_get |COMPONENT_SELECTOR=当前工作模式 |PROP=Text
+                            arg<VALUE>:
+                              text |TEXT=夜间模式
+                        >>>
+                        controls_if
+                          arg<IF0>:
+                            logic_compare |OP=EQ
+                              arg<A>:
+                                lists_select_item
+                                  arg<LIST>:
+                                    lexical_variable_get |VAR=parts
+                                  arg<NUM>:
+                                    math_number |NUM=2
+                              arg<B>:
+                                text |TEXT=SILENT
+                          do<DO0>:
+                            component_set_get |COMPONENT_SELECTOR=当前工作模式 |PROP=Text
+                              arg<VALUE>:
+                                text |TEXT=安静模式
+                          >>>
+                          controls_if
+                            arg<IF0>:
+                              logic_compare |OP=EQ
+                                arg<A>:
+                                  lists_select_item
+                                    arg<LIST>:
+                                      lexical_variable_get |VAR=parts
+                                    arg<NUM>:
+                                      math_number |NUM=2
+                                arg<B>:
+                                  text |TEXT=EMERGENCY
+                            do<DO0>:
+                              component_set_get |COMPONENT_SELECTOR=当前工作模式 |PROP=Text
+                                arg<VALUE>:
+                                  text |TEXT=紧急模式
+                  >>>
+                  controls_if
+                    arg<IF0>:
+                      logic_compare |OP=EQ
+                        arg<A>:
+                          lists_select_item
+                            arg<LIST>:
+                              lexical_variable_get |VAR=parts
+                            arg<NUM>:
+                              math_number |NUM=1
+                        arg<B>:
+                          text |TEXT=DIST
+                    do<DO0>:
+                      component_set_get |COMPONENT_SELECTOR=前方距离具体值 |PROP=Text
+                        arg<VALUE>:
+                          lists_select_item
+                            arg<LIST>:
+                              lexical_variable_get |VAR=parts
+                            arg<NUM>:
+                              math_number |NUM=2
+                    >>>
+                    controls_if
+                      arg<IF0>:
+                        logic_compare |OP=EQ
+                          arg<A>:
+                            lists_select_item
+                              arg<LIST>:
+                                lexical_variable_get |VAR=parts
+                              arg<NUM>:
+                                math_number |NUM=1
+                          arg<B>:
+                            text |TEXT=STATE
+                      do<DO0>:
+                        component_set_get |COMPONENT_SELECTOR=障碍物状态具体值 |PROP=Text
+                          arg<VALUE>:
+                            lists_select_item
+                              arg<LIST>:
+                                lexical_variable_get |VAR=parts
+                              arg<NUM>:
+                                math_number |NUM=2
+                      >>>
+                      controls_if
+                        arg<IF0>:
+                          logic_compare |OP=EQ
+                            arg<A>:
+                              lists_select_item
+                                arg<LIST>:
+                                  lexical_variable_get |VAR=parts
+                                arg<NUM>:
+                                  math_number |NUM=1
+                            arg<B>:
+                              text |TEXT=ALARM
+                        do<DO0>:
+                          controls_if
+                            arg<IF0>:
+                              logic_compare |OP=EQ
+                                arg<A>:
+                                  lists_select_item
+                                    arg<LIST>:
+                                      lexical_variable_get |VAR=parts
+                                    arg<NUM>:
+                                      math_number |NUM=2
+                                arg<B>:
+                                  text |TEXT=NORMAL
+                            do<DO0>:
+                              component_set_get |COMPONENT_SELECTOR=报警状态具体值 |PROP=Text
+                                arg<VALUE>:
+                                  text |TEXT=正常
+                            >>>
+                            controls_if
+                              arg<IF0>:
+                                logic_compare |OP=EQ
+                                  arg<A>:
+                                    lists_select_item
+                                      arg<LIST>:
+                                        lexical_variable_get |VAR=parts
+                                      arg<NUM>:
+                                        math_number |NUM=2
+                                  arg<B>:
+                                    text |TEXT=MANUAL_ACTIVE
+                              do<DO0>:
+                                component_set_get |COMPONENT_SELECTOR=报警状态具体值 |PROP=Text
+                                  arg<VALUE>:
+                                    text |TEXT=主动报警中
+                              >>>
+                              controls_if
+                                arg<IF0>:
+                                  logic_compare |OP=EQ
+                                    arg<A>:
+                                      lists_select_item
+                                        arg<LIST>:
+                                          lexical_variable_get |VAR=parts
+                                        arg<NUM>:
+                                          math_number |NUM=2
+                                    arg<B>:
+                                      text |TEXT=CANCELLED
+                                do<DO0>:
+                                  component_set_get |COMPONENT_SELECTOR=报警状态具体值 |PROP=Text
+                                    arg<VALUE>:
+                                      text |TEXT=取消报警
+=== TOP-LEVEL BLOCK #17 ===
+component_event |COMPONENT_SELECTOR=切换夜间模式
+  do<DO>:
+    procedures_callnoreturn |PROCNAME=sendCommand
+      arg<ARG0>:
+        text |TEXT=MODE:NIGHT
+      >>>
+      component_set_get |COMPONENT_SELECTOR=当前工作模式文字提示 |PROP=Text
+        arg<VALUE>:
+          text |TEXT=正在切换为夜间模式
+=== TOP-LEVEL BLOCK #18 ===
+component_event |COMPONENT_SELECTOR=交通灯识别接口
+  do<DO>:
+    local_declaration_statement |VAR0=trafficParts
+      arg<DECL0>:
+        text_split |OP=SPLIT
+          arg<TEXT>:
+            lexical_variable_get |VAR=responseContent
+          arg<AT>:
+            text |TEXT=|
+      do<STACK>:
+        controls_if
+          arg<IF0>:
+            logic_compare |OP=EQ
+              arg<A>:
+                lexical_variable_get |VAR=responseCode
+              arg<B>:
+                math_number |NUM=200
+          do<DO0>:
+            controls_if
+              arg<IF0>:
+                logic_compare |OP=EQ
+                  arg<A>:
+                    lists_select_item
+                      arg<LIST>:
+                        lexical_variable_get |VAR=trafficParts
+                      arg<NUM>:
+                        math_number |NUM=1
+                  arg<B>:
+                    text |TEXT=RED
+              do<DO0>:
+                component_set_get |COMPONENT_SELECTOR=交通灯识别结果 |PROP=Text
+                  arg<VALUE>:
+                    text |TEXT=识别结果：红灯
+                  >>>
+                  component_set_get |COMPONENT_SELECTOR=交通灯识别置信度 |PROP=Text
+                    arg<VALUE>:
+                      text_join
+                        arg<ADD0>:
+                          text |TEXT=置信度：
+                        arg<ADD1>:
+                          lists_select_item
+                            arg<LIST>:
+                              lexical_variable_get |VAR=trafficParts
+                            arg<NUM>:
+                              math_number |NUM=2
+                    >>>
+                    component_method |COMPONENT_SELECTOR=交通灯语音播报
+                      arg<ARG0>:
+                        text |TEXT=检测到红灯，请停止前进
+              do<ELSE>:
+                controls_if
+                  arg<IF0>:
+                    logic_compare |OP=EQ
+                      arg<A>:
+                        lists_select_item
+                          arg<LIST>:
+                            lexical_variable_get |VAR=trafficParts
+                          arg<NUM>:
+                            math_number |NUM=1
+                      arg<B>:
+                        text |TEXT=YELLOW
+                  do<DO0>:
+                    component_set_get |COMPONENT_SELECTOR=交通灯识别结果 |PROP=Text
+                      arg<VALUE>:
+                        text |TEXT=识别结果：黄灯
+                      >>>
+                      component_set_get |COMPONENT_SELECTOR=交通灯识别置信度 |PROP=Text
+                        arg<VALUE>:
+                          text_join
+                            arg<ADD0>:
+                              text |TEXT=置信度：
+                            arg<ADD1>:
+                              lists_select_item
+                                arg<LIST>:
+                                  lexical_variable_get |VAR=trafficParts
+                                arg<NUM>:
+                                  math_number |NUM=2
+                        >>>
+                        component_method |COMPONENT_SELECTOR=交通灯语音播报
+                          arg<ARG0>:
+                            text |TEXT=检测到黄灯，请注意
+                  do<ELSE>:
+                    controls_if
+                      arg<IF0>:
+                        logic_compare |OP=EQ
+                          arg<A>:
+                            lists_select_item
+                              arg<LIST>:
+                                lexical_variable_get |VAR=trafficParts
+                              arg<NUM>:
+                                math_number |NUM=1
+                          arg<B>:
+                            text |TEXT=GREEN
+                      do<DO0>:
+                        component_set_get |COMPONENT_SELECTOR=交通灯识别结果 |PROP=Text
+                          arg<VALUE>:
+                            text |TEXT=识别结果：绿灯
+                          >>>
+                          component_set_get |COMPONENT_SELECTOR=交通灯识别置信度 |PROP=Text
+                            arg<VALUE>:
+                              text_join
+                                arg<ADD0>:
+                                  text |TEXT=置信度：
+                                arg<ADD1>:
+                                  lists_select_item
+                                    arg<LIST>:
+                                      lexical_variable_get |VAR=trafficParts
+                                    arg<NUM>:
+                                      math_number |NUM=2
+                            >>>
+                            component_method |COMPONENT_SELECTOR=交通灯语音播报
+                              arg<ARG0>:
+                                text |TEXT=检测到绿灯，可以通行
+                      do<ELSE>:
+                        component_set_get |COMPONENT_SELECTOR=交通灯识别结果 |PROP=Text
+                          arg<VALUE>:
+                            text |TEXT=识别结果：未检测到交通灯
+                          >>>
+                          component_set_get |COMPONENT_SELECTOR=交通灯识别置信度 |PROP=Text
+                            arg<VALUE>:
+                              text |TEXT=置信度：--
+                            >>>
+                            component_method |COMPONENT_SELECTOR=交通灯语音播报
+                              arg<ARG0>:
+                                text |TEXT=未检测到交通灯
+          do<ELSE>:
+            component_set_get |COMPONENT_SELECTOR=交通灯识别结果 |PROP=Text
+              arg<VALUE>:
+                text |TEXT=识别失败
+              >>>
+              component_set_get |COMPONENT_SELECTOR=交通灯识别置信度 |PROP=Text
+                arg<VALUE>:
+                  text_join
+                    arg<ADD0>:
+                      text |TEXT=HTTP错误：
+                    arg<ADD1>:
+                      lexical_variable_get |VAR=responseCode
+=== TOP-LEVEL BLOCK #19 ===
+component_event |COMPONENT_SELECTOR=扫描按钮
+  do<DO>:
+    component_set_get |COMPONENT_SELECTOR=扫描按钮 |PROP=Enabled
+      arg<VALUE>:
+        logic_boolean |BOOL=FALSE
+      >>>
+      component_set_get |COMPONENT_SELECTOR=连接状态信息 |PROP=Text
+        arg<VALUE>:
+          text |TEXT=正在扫描
+        >>>
+        component_set_get |COMPONENT_SELECTOR=设备选择框 |PROP=Elements
+          arg<VALUE>:
+            lists_create_with
+          >>>
+          component_set_get |COMPONENT_SELECTOR=计时器1 |PROP=TimerInterval
+            arg<VALUE>:
+              math_number |NUM=8000
+            >>>
+            component_set_get |COMPONENT_SELECTOR=计时器1 |PROP=TimerEnabled
+              arg<VALUE>:
+                logic_boolean |BOOL=TRUE
+              >>>
+              component_method |COMPONENT_SELECTOR=BluetoothLE1
+=== TOP-LEVEL BLOCK #20 ===
+component_event |COMPONENT_SELECTOR=切换安静模式
+  do<DO>:
+    procedures_callnoreturn |PROCNAME=sendCommand
+      arg<ARG0>:
+        text |TEXT=MODE:SILENT
+      >>>
+      component_set_get |COMPONENT_SELECTOR=当前工作模式文字提示 |PROP=Text
+        arg<VALUE>:
+          text |TEXT=正在切换为安静模式
+=== TOP-LEVEL BLOCK #21 ===
+component_event |COMPONENT_SELECTOR=切换紧急模式
+  do<DO>:
+    procedures_callnoreturn |PROCNAME=sendCommand
+      arg<ARG0>:
+        text |TEXT=MODE:EMERGENCY
+      >>>
+      component_set_get |COMPONENT_SELECTOR=当前工作模式文字提示 |PROP=Text
+        arg<VALUE>:
+          text |TEXT=正在切换为紧急模式
+=== TOP-LEVEL BLOCK #22 ===
+component_event |COMPONENT_SELECTOR=计时器1
+  do<DO>:
+    component_set_get |COMPONENT_SELECTOR=计时器1 |PROP=TimerEnabled
+      arg<VALUE>:
+        logic_boolean |BOOL=FALSE
+      >>>
+      component_method |COMPONENT_SELECTOR=BluetoothLE1
+        >>>
+        component_set_get |COMPONENT_SELECTOR=扫描按钮 |PROP=Enabled
+          arg<VALUE>:
+            logic_boolean |BOOL=TRUE
+          >>>
+          controls_if
+            arg<IF0>:
+              logic_compare |OP=EQ
+                arg<A>:
+                  lexical_variable_get |VAR=global isConnected
+                arg<B>:
+                  logic_false |BOOL=FALSE
+            do<DO0>:
+              component_set_get |COMPONENT_SELECTOR=连接状态信息 |PROP=Text
+                arg<VALUE>:
+                  text |TEXT=扫描完成，请选择设备
+=== TOP-LEVEL BLOCK #23 ===
+component_event |COMPONENT_SELECTOR=紧急报警按钮
+  do<DO>:
+    procedures_callnoreturn |PROCNAME=sendCommand
+      arg<ARG0>:
+        text |TEXT=ALARM:MANUAL
+      >>>
+      component_set_get |COMPONENT_SELECTOR=报警状态具体值 |PROP=Text
+        arg<VALUE>:
+          text |TEXT=正在发送报警
+=== TOP-LEVEL BLOCK #24 ===
+component_event |COMPONENT_SELECTOR=BluetoothLE1
+  do<DO>:
+    component_set_get |COMPONENT_SELECTOR=当前设备信息 |PROP=Text
+      arg<VALUE>:
+        text |TEXT=请选择设备
+      >>>
+      component_set_get |COMPONENT_SELECTOR=设备选择框 |PROP=ElementsFromString
+        arg<VALUE>:
+          component_set_get |COMPONENT_SELECTOR=BluetoothLE1 |PROP=DeviceList
+=== TOP-LEVEL BLOCK #25 ===
+component_event |COMPONENT_SELECTOR=设备选择框
+  do<DO>:
+    controls_if
+      arg<IF0>:
+        math_compare |OP=GT
+          arg<A>:
+            component_set_get |COMPONENT_SELECTOR=设备选择框 |PROP=SelectionIndex
+          arg<B>:
+            math_number |NUM=0
+      do<DO0>:
+        component_set_get |COMPONENT_SELECTOR=计时器1 |PROP=TimerEnabled
+          arg<VALUE>:
+            logic_false |BOOL=FALSE
+          >>>
+          component_set_get |COMPONENT_SELECTOR=当前设备信息 |PROP=Text
+            arg<VALUE>:
+              component_set_get |COMPONENT_SELECTOR=设备选择框 |PROP=Selection
+            >>>
+            component_set_get |COMPONENT_SELECTOR=连接状态信息 |PROP=Text
+              arg<VALUE>:
+                text |TEXT=正在连接
+              >>>
+              component_set_get |COMPONENT_SELECTOR=扫描按钮 |PROP=Enabled
+                arg<VALUE>:
+                  logic_false |BOOL=FALSE
+                >>>
+                component_set_get |COMPONENT_SELECTOR=设备选择框 |PROP=Enabled
+                  arg<VALUE>:
+                    logic_false |BOOL=FALSE
+                  >>>
+                  component_set_get |COMPONENT_SELECTOR=断开连接按钮 |PROP=Enabled
+                    arg<VALUE>:
+                      logic_false |BOOL=FALSE
+                    >>>
+                    component_method |COMPONENT_SELECTOR=BluetoothLE1
+                      >>>
+                      component_method |COMPONENT_SELECTOR=BluetoothLE1
+                        arg<ARG0>:
+                          component_set_get |COMPONENT_SELECTOR=设备选择框 |PROP=SelectionIndex
+=== TOP-LEVEL BLOCK #26 ===
+component_event |COMPONENT_SELECTOR=BluetoothLE1
+  do<DO>:
+    component_set_get |COMPONENT_SELECTOR=计时器1 |PROP=TimerEnabled
+      arg<VALUE>:
+        logic_false |BOOL=FALSE
+      >>>
+      lexical_variable_set |VAR=global isConnected
+        arg<VALUE>:
+          logic_false |BOOL=TRUE
+        >>>
+        component_set_get |COMPONENT_SELECTOR=连接状态信息 |PROP=Text
+          arg<VALUE>:
+            text |TEXT=已连接
+          >>>
+          component_set_get |COMPONENT_SELECTOR=断开连接按钮 |PROP=Enabled
+            arg<VALUE>:
+              logic_false |BOOL=TRUE
+            >>>
+            component_set_get |COMPONENT_SELECTOR=扫描按钮 |PROP=Enabled
+              arg<VALUE>:
+                logic_false |BOOL=FALSE
+              >>>
+              component_set_get |COMPONENT_SELECTOR=设备选择框 |PROP=Enabled
+                arg<VALUE>:
+                  logic_false |BOOL=FALSE
+                >>>
+                component_set_get |COMPONENT_SELECTOR=切换日常模式 |PROP=Enabled
+                  arg<VALUE>:
+                    logic_false |BOOL=TRUE
+                  >>>
+                  component_set_get |COMPONENT_SELECTOR=切换安静模式 |PROP=Enabled
+                    arg<VALUE>:
+                      logic_false |BOOL=TRUE
+                    >>>
+                    component_set_get |COMPONENT_SELECTOR=切换夜间模式 |PROP=Enabled
+                      arg<VALUE>:
+                        logic_false |BOOL=TRUE
+                      >>>
+                      component_set_get |COMPONENT_SELECTOR=切换紧急模式 |PROP=Enabled
+                        arg<VALUE>:
+                          logic_false |BOOL=TRUE
+                        >>>
+                        component_set_get |COMPONENT_SELECTOR=紧急报警按钮 |PROP=Enabled
+                          arg<VALUE>:
+                            logic_false |BOOL=TRUE
+                          >>>
+                          component_method |COMPONENT_SELECTOR=BluetoothLE1
+                            arg<ARG0>:
+                              lexical_variable_get |VAR=global ServiceUUID
+                            arg<ARG1>:
+                              lexical_variable_get |VAR=global TXUUID
+                            arg<ARG2>:
+                              logic_false |BOOL=FALSE
+                            >>>
+                            component_method |COMPONENT_SELECTOR=BluetoothLE1
+                              arg<ARG0>:
+                                math_number |NUM=185
+                              >>>
+                              procedures_callnoreturn |PROCNAME=sendCommand
+                                arg<ARG0>:
+                                  text |TEXT=STATUS:GET\n
+=== TOP-LEVEL BLOCK #27 ===
+component_event |COMPONENT_SELECTOR=断开连接按钮
+  do<DO>:
+    component_method |COMPONENT_SELECTOR=BluetoothLE1
+      >>>
+      component_set_get |COMPONENT_SELECTOR=断开连接按钮 |PROP=Enabled
+        arg<VALUE>:
+          logic_false |BOOL=FALSE
+        >>>
+        component_set_get |COMPONENT_SELECTOR=连接状态信息 |PROP=Text
+          arg<VALUE>:
+            text |TEXT=正在断开……
+=== TOP-LEVEL BLOCK #28 ===
+component_event |COMPONENT_SELECTOR=BluetoothLE1
+  do<DO>:
+    lexical_variable_set |VAR=global isConnected
+      arg<VALUE>:
+        logic_false |BOOL=FALSE
+      >>>
+      component_set_get |COMPONENT_SELECTOR=连接状态信息 |PROP=Text
+        arg<VALUE>:
+          text |TEXT=未连接
+        >>>
+        component_set_get |COMPONENT_SELECTOR=当前设备信息 |PROP=Text
+          arg<VALUE>:
+            text |TEXT=未选择
+          >>>
+          component_set_get |COMPONENT_SELECTOR=断开连接按钮 |PROP=Enabled
+            arg<VALUE>:
+              logic_false |BOOL=TRUE
+            >>>
+            component_set_get |COMPONENT_SELECTOR=扫描按钮 |PROP=Enabled
+              arg<VALUE>:
+                logic_false |BOOL=TRUE
+              >>>
+              component_set_get |COMPONENT_SELECTOR=设备选择框 |PROP=Enabled
+                arg<VALUE>:
+                  logic_false |BOOL=TRUE
