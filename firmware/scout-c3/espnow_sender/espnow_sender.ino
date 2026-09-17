@@ -1,109 +1,288 @@
 /**
- * 前哨 ESP32-S3 CAM：超声波高位测距 + ESP-NOW 发送
+ * 前哨主控 ESP32-S3 CAM 完整固件
+ *
+ * 功能：
+ *   1. 超声波高位测距 → ESP-NOW 发给盲杖
+ *   2. 接收盲杖拍照命令 → 拍照 → WiFi 传给手机
+ *   3. 摄像头 Web Server（手机可直接访问 /capture 拍照）
  *
  * 接线：
- *   HC-SR04      ESP32-S3 CAM
- *   VCC   →      5V
- *   GND   →      GND
- *   Trig  →      GPIO 14
- *   Echo  →      GPIO 2
+ *   HC-SR04:  Trig→GPIO14, Echo→GPIO2, VCC→5V, GND→GND
+ *   摄像头:   板载，不用接线
+ *
+ * 摄像头占用的引脚（不能用）：
+ *   4,5,6,7,8,9,10,11,12,13,15,16,17,18
+ *   超声波用 GPIO14(Trig) 和 GPIO2(Echo)，不冲突
+ *
+ * BLE 设备名：无（前哨不连蓝牙，走 ESP-NOW + WiFi）
  */
 
 #include <esp_now.h>
 #include <WiFi.h>
+#include <esp_camera.h>
+#include "esp_http_server.h"
+#include "camera_pins.h"
 
-// 盲杖的 MAC 地址
-uint8_t caneMac[] = {0x94, 0xA9, 0x90, 0xCA, 0xAE, 0x64};
-
-// 超声波引脚（避开摄像头占用的引脚）
+// ====================== 引脚 ======================
 #define TRIG_PIN 14
 #define ECHO_PIN 2
 
-// 发送的数据结构
+// ====================== 盲杖 MAC ======================
+uint8_t caneMac[] = {0x94, 0xA9, 0x90, 0xCA, 0xAE, 0x64};
+
+// ====================== WiFi ======================
+const char* ssid = "你的WiFi名";       // 改成你的 WiFi
+const char* password = "你的WiFi密码";  // 改成你的 WiFi 密码
+
+// ====================== 数据结构 ======================
+// 前哨 → 盲杖：高位距离
 typedef struct {
   float distance;
   int level;
 } ScoutData;
 
-ScoutData sendData;
+// 盲杖 → 前哨：命令
+typedef struct {
+  int cmd;  // 1=拍照
+} CaneCmd;
 
-// 测距函数
+ScoutData sendData;
+CaneCmd recvCmd;
+
+// ====================== 超声波测距 ======================
 float readDistance() {
   digitalWrite(TRIG_PIN, LOW);
   delayMicroseconds(2);
   digitalWrite(TRIG_PIN, HIGH);
   delayMicroseconds(10);
   digitalWrite(TRIG_PIN, LOW);
-
-  long duration = pulseIn(ECHO_PIN, HIGH, 30000);
-  if (duration == 0) return -1.0;
-  return duration * 0.0343 / 2.0;
+  long d = pulseIn(ECHO_PIN, HIGH, 30000);
+  if (d == 0) return -1.0;
+  return d * 0.0343 / 2.0;
 }
 
-// 根据距离算等级
 int getLevel(float dist) {
-  if (dist < 0) return 0;        // 无检测
-  if (dist < 30) return 3;      // 危险
-  if (dist < 80) return 2;      // 警告
-  if (dist < 150) return 1;     // 提醒
-  return 0;                     // 安全
+  if (dist < 0) return 0;
+  if (dist < 30) return 3;
+  if (dist < 80) return 2;
+  if (dist < 150) return 1;
+  return 0;
 }
 
+// ====================== 摄像头初始化 ======================
+bool cameraInit() {
+  camera_config_t config;
+  config.ledc_channel = LEDC_CHANNEL_0;
+  config.ledc_timer = LEDC_TIMER_0;
+  config.pin_d0 = Y2_GPIO_NUM;
+  config.pin_d1 = Y3_GPIO_NUM;
+  config.pin_d2 = Y4_GPIO_NUM;
+  config.pin_d3 = Y5_GPIO_NUM;
+  config.pin_d4 = Y6_GPIO_NUM;
+  config.pin_d5 = Y7_GPIO_NUM;
+  config.pin_d6 = Y8_GPIO_NUM;
+  config.pin_d7 = Y9_GPIO_NUM;
+  config.pin_xclk = XCLK_GPIO_NUM;
+  config.pin_pclk = PCLK_GPIO_NUM;
+  config.pin_vsync = VSYNC_GPIO_NUM;
+  config.pin_href = HREF_GPIO_NUM;
+  config.pin_sscb_sda = SIOD_GPIO_NUM;
+  config.pin_sscb_scl = SIOC_GPIO_NUM;
+  config.pin_pwdn = PWDN_GPIO_NUM;
+  config.pin_reset = RESET_GPIO_NUM;
+  config.xclk_freq_hz = 20000000;
+  config.frame_size = FRAMESIZE_QVGA;
+  config.pixel_format = PIXFORMAT_JPEG;
+  config.grab_mode = CAMERA_GRAB_LATEST;
+  config.fb_location = CAMERA_FB_IN_PSRAM;
+  config.jpeg_quality = 12;
+  config.fb_count = 2;
+
+  if (psramFound()) {
+    config.jpeg_quality = 10;
+    config.fb_count = 2;
+  } else {
+    config.frame_size = FRAMESIZE_SVGA;
+    config.fb_location = CAMERA_FB_IN_DRAM;
+    config.fb_count = 1;
+  }
+
+  esp_err_t err = esp_camera_init(&config);
+  if (err != ESP_OK) {
+    Serial.printf("摄像头初始化失败: 0x%x\n", err);
+    return false;
+  }
+
+  // 翻转画面（根据实际安装方向调整）
+  sensor_t *s = esp_camera_sensor_get();
+  s->set_vflip(s, 1);
+  s->set_brightness(s, 1);
+
+  Serial.println("摄像头初始化成功");
+  return true;
+}
+
+// ====================== 拍照 ======================
+camera_fb_t* takePhoto() {
+  camera_fb_t *fb = esp_camera_fb_get();
+  if (fb != NULL) {
+    Serial.printf("[拍照] %dx%d %d字节\n", fb->width, fb->height, fb->len);
+  } else {
+    Serial.println("[拍照] 失败");
+  }
+  return fb;
+}
+
+// ====================== HTTP /capture 接口 ======================
+// 手机浏览器访问 http://前哨IP/capture 可以拿到一张 JPEG 照片
+static esp_err_t capture_handler(httpd_req_t *req) {
+  camera_fb_t *fb = esp_camera_fb_get();
+  if (!fb) {
+    httpd_resp_send_500(req);
+    return ESP_FAIL;
+  }
+
+  httpd_resp_set_type(req, "image/jpeg");
+  httpd_resp_set_hdr(req, "Content-Disposition", "inline; filename=capture.jpg");
+  httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+
+  esp_err_t res = httpd_resp_send(req, (const char *)fb->buf, fb->len);
+  esp_camera_fb_return(fb);
+  return res;
+}
+
+// HTTP /stream 接口（实时视频流）
+static esp_err_t stream_handler(httpd_req_t *req) {
+  camera_fb_t *fb = NULL;
+  esp_err_t res = ESP_OK;
+  char part_buf[64];
+
+  httpd_resp_set_type(req, "multipart/x-mixed-replace; boundary=123456789000000000000987654321");
+  httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+
+  while (true) {
+    fb = esp_camera_fb_get();
+    if (!fb) {
+      res = ESP_FAIL;
+      break;
+    }
+
+    size_t hlen = snprintf(part_buf, 64, "--123456789000000000000987654321\r\nContent-Type: image/jpeg\r\nContent-Length: %u\r\n\r\n", fb->len);
+    if (res == ESP_OK) res = httpd_resp_send_chunk(req, part_buf, hlen);
+    if (res == ESP_OK) res = httpd_resp_send_chunk(req, (const char *)fb->buf, fb->len);
+    if (res == ESP_OK) res = httpd_resp_send_chunk(req, "\r\n", 2);
+    esp_camera_fb_return(fb);
+
+    if (res != ESP_OK) break;
+  }
+  return res;
+}
+
+// 启动 Web 服务器
+void startCameraServer() {
+  httpd_handle_t server = NULL;
+  httpd_config_t config = HTTPD_DEFAULT_CONFIG();
+  config.server_port = 80;
+
+  httpd_uri_t capture_uri = {
+    .uri = "/capture",
+    .method = HTTP_GET,
+    .handler = capture_handler,
+    .user_ctx = NULL
+  };
+
+  httpd_uri_t stream_uri = {
+    .uri = "/stream",
+    .method = HTTP_GET,
+    .handler = stream_handler,
+    .user_ctx = NULL
+  };
+
+  if (httpd_start(&server, &config) == ESP_OK) {
+    httpd_register_uri_handler(server, &capture_uri);
+    httpd_register_uri_handler(server, &stream_uri);
+    Serial.println("Web 服务器启动: /capture (拍照) /stream (实时)");
+  }
+}
+
+// ====================== ESP-NOW ======================
+// 盲杖→前哨：拍照命令。前哨本身不主动上传照片，照片由手机通过 /capture 拉取。
+// 这里收到命令后预热摄像头（取一帧即归还），让下次 /capture 响应更快。
+void OnDataRecv(const esp_now_recv_info_t *info, const uint8_t *data, int len) {
+  memcpy(&recvCmd, data, sizeof(recvCmd));
+  if (recvCmd.cmd == 1) {
+    Serial.println("[ESP-NOW] 收到拍照命令，预热摄像头");
+    camera_fb_t *fb = esp_camera_fb_get();
+    if (fb) esp_camera_fb_return(fb);
+  }
+}
+
+// ====================== 初始化 ======================
 void setup() {
   Serial.begin(115200);
+  Serial.println("\n==============================================");
+  Serial.println("     Scout-CAM  智能盲杖前哨");
+  Serial.println("==============================================");
 
   pinMode(TRIG_PIN, OUTPUT);
   pinMode(ECHO_PIN, INPUT);
-  digitalWrite(TRIG_PIN, LOW);
 
-  WiFi.mode(WIFI_STA);
+  // 摄像头
+  bool camOk = cameraInit();
+  Serial.printf("  [摄像头]   %s\n", camOk ? "OK ✓" : "失败 ✗");
 
-  Serial.println("前哨 ESP-NOW + 超声波");
-  Serial.print("本机 MAC: ");
-  Serial.println(WiFi.macAddress());
-
-  if (esp_now_init() != ESP_OK) {
-    Serial.println("ESP-NOW 初始化失败");
-    return;
+  // WiFi 连接（给手机访问摄像头用）
+  WiFi.mode(WIFI_AP_STA);  // 同时开 AP 和 STA
+  WiFi.begin(ssid, password);
+  Serial.print("  [WiFi]     连接中");
+  int wifiTimeout = 0;
+  while (WiFi.status() != WL_CONNECTED && wifiTimeout < 20) {
+    delay(500);
+    Serial.print(".");
+    wifiTimeout++;
+  }
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.printf("\n  [WiFi]     OK ✓  IP: %s\n", WiFi.localIP().toString().c_str());
+    startCameraServer();  // 启动拍照 Web 服务器
+    Serial.println("  [HTTP]     /capture(拍照) /stream(实时) 就绪");
+  } else {
+    Serial.println("\n  [WiFi]     失败 ✗  仅 ESP-NOW 模式");
   }
 
-  esp_now_peer_info_t peerInfo;
-  memset(&peerInfo, 0, sizeof(peerInfo));
-  memcpy(peerInfo.peer_addr, caneMac, 6);
-  peerInfo.channel = 0;
-  peerInfo.encrypt = false;
-
-  if (esp_now_add_peer(&peerInfo) != ESP_OK) {
-    Serial.println("添加 peer 失败");
-    return;
+  // ESP-NOW（和盲杖通信）
+  if (esp_now_init() == ESP_OK) {
+    esp_now_register_recv_cb(OnDataRecv);
+    esp_now_peer_info_t peer;
+    memset(&peer, 0, sizeof(peer));
+    memcpy(peer.peer_addr, caneMac, 6);
+    peer.encrypt = false;
+    esp_now_add_peer(&peer);
+    Serial.println("  [ESP-NOW]  就绪 ✓");
+  } else {
+    Serial.println("  [ESP-NOW]  失败 ✗");
   }
 
-  Serial.println("初始化完成，开始测距发送");
-  Serial.println("----------------------------------------");
+  Serial.printf("  [MAC]      %s\n", WiFi.macAddress().c_str());
+  Serial.println("==============================================");
+  Serial.println("初始化完成。手机访问 http://<上面IP>/capture 拍照");
 }
 
+// ====================== 主循环 ======================
 void loop() {
-  float dist = readDistance();
-  sendData.distance = dist;
-  sendData.level = getLevel(dist);
+  // 每 500ms 测高位距离，ESP-NOW 发给盲杖
+  static unsigned long lastSend = 0;
+  static int lastLevel = -1;
+  if (millis() - lastSend >= 500) {
+    lastSend = millis();
+    sendData.distance = readDistance();
+    sendData.level = getLevel(sendData.distance);
 
-  Serial.print("高位距离: ");
-  if (dist < 0) {
-    Serial.print("无检测");
-  } else {
-    Serial.print(dist);
-    Serial.print("cm");
+    // 等级变化时打印，避免刷屏
+    if (sendData.level != lastLevel) {
+      lastLevel = sendData.level;
+      Serial.printf("[前哨] 高位=%.0fcm 等级=%d\n", sendData.distance, sendData.level);
+    }
+
+    esp_now_send(caneMac, (uint8_t *)&sendData, sizeof(sendData));
   }
-  Serial.print(" 等级=");
-  Serial.println(sendData.level);
-
-  esp_err_t result = esp_now_send(caneMac, (uint8_t *)&sendData, sizeof(sendData));
-
-  if (result == ESP_OK) {
-    Serial.println("  → 已发送给盲杖");
-  } else {
-    Serial.println("  → 发送失败");
-  }
-
-  delay(500);
 }

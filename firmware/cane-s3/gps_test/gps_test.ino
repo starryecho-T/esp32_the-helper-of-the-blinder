@@ -5,8 +5,10 @@
  *   GPS 模块      ESP32-S3
  *   G  →          GND
  *   V  →          5V（或3.3V）
- *   R  →          GPIO 15（ESP32 TX，发给GPS，一般不用）
- *   T  →          GPIO 14（ESP32 RX，接收GPS数据）
+ *   R  →          GPIO 16（ESP32 TX，发给GPS，一般不用）
+ *   T  →          GPIO 15（ESP32 RX，接收GPS数据）
+ *
+ * 注意：原版本用 GPIO14，与 SYN6288 TTS 冲突，已改到 GPIO15/16（与 main.ino 一致）
  *
  * 模块上电后持续输出 NMEA 语句
  * 需要安装 TinyGPS++ 库：工具→管理库→搜索 TinyGPSPlus
@@ -15,8 +17,8 @@
 #include <TinyGPSPlus.h>
 
 // GPS 用 Serial1
-#define GPS_TX_PIN 15   // ESP32 → GPS RX（一般不用，GPS只发不收）
-#define GPS_RX_PIN 14   // GPS TX → ESP32 RX
+#define GPS_TX_PIN 16   // ESP32 → GPS RX（一般不用，GPS只发不收）
+#define GPS_RX_PIN 15   // GPS TX → ESP32 RX
 
 TinyGPSPlus gps;
 

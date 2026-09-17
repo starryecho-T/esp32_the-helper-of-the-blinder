@@ -1,636 +1,728 @@
-#include <Arduino.h>
+/**
+ * 盲杖主控 ESP32-S3 完整固件
+ *
+ * 功能：
+ *   1. 超声波低位测距 + 前哨高位融合判断
+ *   2. ESP-NOW 接收前哨高位距离 + 发送拍照命令
+ *   3. MPU6050 跌倒检测 + 30秒倒计时
+ *   4. 旋转编码器：旋转180°切模式 / 三连按报警 / 长按1秒拍照
+ *   5. 振动马达反馈 + SYN6288 语音播报（跌倒提示/障碍提醒/红绿灯）
+ *   6. 电量检测
+ *   7. GPS 定位（TinyGPS++ 解析，BLE 上报经纬度）
+ *   8. BLE 发送状态给手机 App（含接收 App 下发的模式/取消指令）
+ *
+ * 接线：
+ *   HC-SR04:   Trig→GPIO5, Echo→GPIO18, VCC→5V, GND→GND
+ *   振动马达:  IN→GPIO4, VCC→5V, GND→GND
+ *   MPU6050:   SDA→GPIO10, SCL→GPIO9, VCC→3.3V, GND→GND
+ *   编码器EC11: A→GPIO6, B→GPIO7, C(按钮)→GPIO8, VCC→3.3V, GND→GND
+ *   SYN6288:   RX←GPIO14, TX→GPIO3, VCC→5V, GND→GND, 喇叭接模块
+ *   电量检测:  电池分压→GPIO1
+ *   GPS:       TX→GPIO15, RX→GPIO16, VCC→5V, GND→GND（注意原 gps_test 用 GPIO14 与 TTS 冲突，已改）
+ *
+ * 注：本机不使用蜂鸣器，听觉反馈由 SYN6288 语音完成。
+ */
+
+#include <esp_now.h>
+#include <WiFi.h>
 #include <BLEDevice.h>
 #include <BLEServer.h>
 #include <BLEUtils.h>
 #include <BLE2902.h>
 #include <Wire.h>
+#include <Arduino.h>
+#include <TinyGPSPlus.h>
 
-// =====================================================
-// GPIO 配置（按你的实际接线）
-// =====================================================
+// ====================== PWM ======================
+#define MOTOR_PWM_FREQ 5000
+#define MOTOR_PWM_BITS 8
 
-static const uint8_t TRIG_PIN = 5;     // 超声波 Trig
-static const uint8_t ECHO_PIN = 18;    // 超声波 Echo
-static const uint8_t MOTOR_PIN = 4;    // 振动马达
+// ====================== BLE ======================
+#define DEVICE_NAME "SmartCane-S3"
+#define SERVICE_UUID "6E400001-B5A3-F393-E0A9-E50E24DCCA9E"
+#define RX_UUID "6E400002-B5A3-F393-E0A9-E50E24DCCA9E"
+#define TX_UUID "6E400003-B5A3-F393-E0A9-E50E24DCCA9E"
 
-// MPU6050 I2C
-static const uint8_t SDA_PIN = 21;
-static const uint8_t SCL_PIN = 20;
-static const uint8_t MPU6050_ADDR = 0x68;
+// ====================== 引脚 ======================
+#define TRIG_PIN 5
+#define ECHO_PIN 18
+#define MOTOR_PIN 4
+#define BUTTON_PIN 8     // 原 GPIO0 与 BOOT 冲突，改到 GPIO8（非 strapping）
+#define BATT_PIN 1
+#define MPU6050_ADDR 0x68
+#define SDA_PIN 10       // I2C 改到 GPIO10/GPIO9，避开 USB_D+ 的 GPIO20
+#define SCL_PIN 9
+#define ENC_A 6
+#define ENC_B 7
+#define TTS_TX_PIN 14   // ESP32 TX → SYN6288 RX
+#define TTS_RX_PIN 3    // SYN6288 TX → ESP32 RX
+#define GPS_RX_PIN 15   // GPS TX → ESP32 RX（注意：原 gps_test 用 GPIO14，与 TTS 冲突，已改到 15）
+#define GPS_TX_PIN 16   // ESP32 TX → GPS RX（一般不用）
 
-// =====================================================
-// BLE 配置
-// =====================================================
+// ====================== 前哨 MAC ======================
+uint8_t scoutMac[] = {0x28, 0x84, 0x85, 0x4B, 0xAB, 0xBC};
 
-static const char* DEVICE_NAME = "SmartCane-S3";
+// ====================== 数据结构 ======================
+typedef struct { float distance; int level; } ScoutData;
+typedef struct { int cmd; } CaneCmd;
+ScoutData recvData;
+CaneCmd sendCmd;
 
-static const char* SERVICE_UUID =
-  "6E400001-B5A3-F393-E0A9-E50E24DCCA9E";
-
-// 手机 App -> ESP32-S3，Write
-static const char* RX_UUID =
-  "6E400002-B5A3-F393-E0A9-E50E24DCCA9E";
-
-// ESP32-S3 -> 手机 App，Notify
-static const char* TX_UUID =
-  "6E400003-B5A3-F393-E0A9-E50E24DCCA9E";
-
-// =====================================================
-// PWM 配置（适用于 Arduino-ESP32 Core 3.x）
-// =====================================================
-
-static const uint32_t MOTOR_PWM_FREQ = 5000;
-static const uint8_t MOTOR_PWM_BITS = 8;
-
-// =====================================================
-// 跌倒检测参数
-// =====================================================
-
-static const float FREEFALL_THRESHOLD = 0.4f;  // 失重阈值(g)
-static const float FALL_THRESHOLD = 2.5f;       // 撞击阈值(g)
-
-// =====================================================
-// BLE 对象
-// =====================================================
-
-BLEServer* bleServer = nullptr;
-BLECharacteristic* txCharacteristic = nullptr;
-BLECharacteristic* rxCharacteristic = nullptr;
-
-// =====================================================
-// 工作状态
-// =====================================================
-
+// ====================== 全局状态 ======================
+BLEServer* pServer = nullptr;
+BLECharacteristic* pTxCharacteristic = nullptr;
 bool deviceConnected = false;
-bool oldDeviceConnected = false;
+bool espNowReady = false;   // ESP-NOW 初始化结果（自检用）
+bool autoLoop = true;       // false=暂停自动测距/反馈，便于单独调试外设
 
-String workMode = "DAILY";      // DAILY、NIGHT、SILENT、EMERGENCY
-bool manualAlarm = false;       // 主动报警
+float lowDist = -1;
+float highDist = -1;
+unsigned long highDistTime = 0;   // 最近一次收到前哨高位距离的时间
+int fusedLevel = 0;
+float batteryPct = 100;
 
-float currentDistanceCm = -1.0f;
-String currentState = "NO_ECHO";  // NO_ECHO、SAFE、NOTICE、WARNING、DANGER
+// 前哨高位距离过期时间（毫秒）。超过则视为无数据，避免掉线后永久误报。
+#define HIGH_DIST_TIMEOUT 1500
 
-// 报警状态：NORMAL、MANUAL_ACTIVE、FALL_DETECTED、CANCELLED
-String alarmState = "NORMAL";
+int workMode = 0;  // 0=正常 1=安静 2=夜间
+const char* modeNames[] = {"正常", "安静", "夜间"};
 
-// MPU6050 数据
-float accX, accY, accZ;
-float gyroX, gyroY, gyroZ;
-float accMagnitude;
+// 编码器
+volatile long encoderCount = 0;
+long encoderBase = 0;          // 切模式用的基准
+long encoderBaseFall = 0;       // 跌倒取消检测用的独立基准（与切模式分开）
 
-// 跌倒检测状态机
-int fallState = 0;              // 0=正常, 1=失重, 2=撞击
+// 按钮
+int buttonClickCount = 0;
+unsigned long firstClickTime = 0;
+bool buttonHeld = false;
+unsigned long buttonDownTime = 0;
+bool longPressTriggered = false;
+
+// 跌倒
+float accX, accY, accZ, accMag;
+int fallState = 0;
 unsigned long fallTimer = 0;
-bool fallDetected = false;      // 是否已检测到跌倒
+bool fallDetected = false;
+bool fallCountdown = false;
+unsigned long fallCountdownStart = 0;
+bool fallVoicePlayed = false;
+bool mpuOnline = false;   // MPU6050 是否在线（掉线时跳过跌倒检测，避免 0 值误报）
 
-// =====================================================
-// 定时变量
-// =====================================================
+// 报警
+bool manualAlarm = false;
 
-unsigned long lastMeasureMillis = 0;
-unsigned long lastNotifyMillis = 0;
-unsigned long lastMpuMillis = 0;
+// TTS 串口
+HardwareSerial synSerial(2);
 
-// =====================================================
-// 函数声明
-// =====================================================
+// GPS（Serial1，9600 波特率，NMEA 语句）
+HardwareSerial gpsSerial(1);
+TinyGPSPlus gps;
+double gpsLat = 0, gpsLng = 0;
+bool gpsValid = false;
 
-void sendText(const String& text);
-void handleCommand(String command);
-void updateFeedback();
-float readDistanceCm();
-String classifyDistance(float distance);
-void sendCurrentStatus();
-bool mpuInit();
-void mpuRead();
-void mpuWrite(uint8_t reg, uint8_t data);
-int16_t mpuRead16(uint8_t reg);
-void checkFall();
+// ====================== GB2312 预编码语音短语 ======================
+// "您似乎跌倒了"
+uint8_t msg_fall[] = {0xC4,0xFA,0xCB,0xC6,0xBA,0xF5,0xB5,0xF8,0xB5,0xB9,0xC1,0xCB};
+// "三十秒后自动报警"
+uint8_t msg_countdown[] = {0xC8,0xFD,0xCA,0xAE,0xC3,0xEB,0xBA,0xF3,0xD7,0xD4,0xB6,0xAF,0xB1,0xA8,0xBE,0xAF};
+// "拨动旋钮取消"
+uint8_t msg_cancel[] = {0xB2,0xA6,0xB6,0xAF,0xD0,0xFD,0xC5,0xA5,0xC8,0xA1,0xCF,0xFB};
+// "前方有障碍物"
+uint8_t msg_obstacle[] = {0xC7,0xB0,0xB7,0xBD,0xD3,0xD0,0xD5,0xCF,0xB0,0xAD,0xCE,0xEF};
+// "注意安全"
+uint8_t msg_safe[] = {0xD7,0xA2,0xD2,0xE2,0xB0,0xB2,0xC8,0xAB};
+// "注意脚下"
+uint8_t msg_low[] = {0xD7,0xA2,0xD2,0xE2,0xBD,0xC5,0xCF,0xC2};
+// "注意头部"
+uint8_t msg_high[] = {0xD7,0xA2,0xD2,0xE2,0xCD,0xB7,0xB2,0xBF};
+// "红灯，请等待"
+uint8_t msg_red[] = {0xBA,0xEC,0xB5,0xC6,0xA3,0xAC,0xC7,0xEB,0xB5,0xC8,0xB4,0xFD};
+// "绿灯，可以通行"
+uint8_t msg_green[] = {0xC2,0xCC,0xB5,0xC6,0xA3,0xAC,0xBF,0xC9,0xD2,0xD4,0xCD,0xA8,0xD0,0xD0};
+// "电池电量低"
+uint8_t msg_lowbattery[] = {0xB5,0xE7,0xB3,0xD8,0xB5,0xE7,0xC1,0xBF,0xB5,0xCD};
+// "已报警"
+uint8_t msg_alarmed[] = {0xD2,0xD1,0xB1,0xA8,0xBE,0xAF};
 
-// =====================================================
-// BLE 服务器回调
-// =====================================================
+// ====================== 非语言听觉编码（障碍反馈） ======================
+// 用音调编码障碍位置、用节奏编码危险程度，事件触发、障碍消失即停。
+// 利用 SYN6288 的音调控制标记 [t0](最低)~[t5](最高)，配单字"嘟"(GB2312 0xB6 0xC1)。
+//   下方障碍 → 低音 [t0]嘟；上方障碍 → 高音 [t5]嘟；上下都有 → 低音后高音依次。
+//   危险等级越高 → 重复间隔越短（节奏越密集）。
+uint8_t beep_low[]  = {0x5B,'t','0',0x5D, 0xB6,0xC1};  // [t0]嘟 低音（下方障碍）
+uint8_t beep_high[] = {0x5B,'t','5',0x5D, 0xB6,0xC1};  // [t5]嘟 高音（上方障碍）
 
+// ====================== SYN6288 语音（非阻塞队列） ======================
+// 非阻塞设计：tts_speak 只入队即返回，不阻塞 loop()；
+// 真正发送在 tts_tick() 中按"上一句播完"的节奏进行，保证测距/跌倒检测实时性。
+#define TTS_QUEUE_SIZE 6
+struct TtsItem { const uint8_t* data; uint8_t len; };
+TtsItem ttsQueue[TTS_QUEUE_SIZE];
+uint8_t ttsHead = 0, ttsTail = 0;
+unsigned long ttsBusyUntil = 0;
+
+void tts_sendFrame(const uint8_t *data, uint8_t len) {
+  uint8_t buf[210];
+  buf[0] = 0xFD;
+  buf[1] = (uint8_t)((len + 3) / 256);
+  buf[2] = (uint8_t)((len + 3) % 256);
+  buf[3] = 0x01;
+  buf[4] = 0x00;
+  memcpy(&buf[5], data, len);
+  uint8_t xor_cal = 0;
+  for (uint8_t i = 0; i < len + 5; i++) xor_cal ^= buf[i];
+  buf[len + 5] = xor_cal;
+  synSerial.write(buf, len + 6);
+}
+
+// 入队（非阻塞）。队列满则丢弃最旧的一条，保证最新语音优先。
+void tts_speak(const uint8_t *data, uint8_t len) {
+  ttsQueue[ttsTail] = { data, len };
+  ttsTail = (ttsTail + 1) % TTS_QUEUE_SIZE;
+  if (ttsTail == ttsHead) ttsHead = (ttsHead + 1) % TTS_QUEUE_SIZE;  // 满，丢最旧
+}
+
+// 在 loop() 中调用：空闲且队列非空时发下一句
+void tts_tick() {
+  if (ttsHead == ttsTail) return;             // 队列空
+  if (millis() < ttsBusyUntil) return;       // 上一句还没播完
+  TtsItem item = ttsQueue[ttsHead];
+  ttsHead = (ttsHead + 1) % TTS_QUEUE_SIZE;
+  tts_sendFrame(item.data, item.len);
+  ttsBusyUntil = millis() + (unsigned long)item.len * 120 + 500;
+}
+
+void tts_init() {
+  synSerial.begin(9600, SERIAL_8N1, TTS_RX_PIN, TTS_TX_PIN);
+  delay(200);
+  Serial.println("SYN6288 语音就绪");
+}
+
+// 非语言音调编码：障碍存在时按节奏入队短音。
+// type: 1=大型(上下都有) 2=下方/低位 3=上方/悬空  danger: 0~3
+// 节奏间隔由 danger 决定，障碍消失（不调用）即停。事件触发、非持续播报。
+void playObstacleBeep(int type, int danger, unsigned long now) {
+  static unsigned long lastBeep = 0;
+  // 危险等级越高，节奏越密集
+  unsigned long interval;
+  if (danger >= 3) interval = 180;     // 极近：急促
+  else if (danger == 2) interval = 500; // 中近：中速
+  else interval = 1200;                // 较远：缓
+  if (now - lastBeep < interval) return;
+  lastBeep = now;
+  // 音调编码位置
+  if (type == 2)      tts_speak(beep_low, sizeof(beep_low));       // 下方→低音
+  else if (type == 3) tts_speak(beep_high, sizeof(beep_high));     // 上方→高音
+  else if (type == 1) { tts_speak(beep_low, sizeof(beep_low));    // 上下都有→
+                       tts_speak(beep_high, sizeof(beep_high)); }  //  低音后高音
+}
+
+// ====================== ESP-NOW ======================
+void OnDataRecv(const esp_now_recv_info_t *info, const uint8_t *data, int len) {
+  memcpy(&recvData, data, sizeof(recvData));
+  highDist = recvData.distance;
+  highDistTime = millis();
+}
+void sendCmdToScout(int cmd) {
+  sendCmd.cmd = cmd;
+  esp_now_send(scoutMac, (uint8_t *)&sendCmd, sizeof(sendCmd));
+}
+
+// ====================== BLE 回调 ======================
 class ServerCallbacks : public BLEServerCallbacks {
-  void onConnect(BLEServer* server) override {
-    deviceConnected = true;
-    Serial.println("BLE client connected");
-  }
-
-  void onDisconnect(BLEServer* server) override {
-    deviceConnected = false;
-    Serial.println("BLE client disconnected");
-  }
+  void onConnect(BLEServer* s) override { deviceConnected = true; Serial.println("[BLE] 手机连接"); }
+  void onDisconnect(BLEServer* s) override { deviceConnected = false; s->startAdvertising(); Serial.println("[BLE] 手机断开"); }
 };
-
-// =====================================================
-// BLE 接收回调
-// =====================================================
-
-class RxCallbacks : public BLECharacteristicCallbacks {
-  void onWrite(BLECharacteristic* characteristic) override {
-    String value = characteristic->getValue();
-
-    Serial.print("RX: ");
-    Serial.println(value);
-
-    value.trim();
-
-    if (value.length() == 0) {
-      return;
-    }
-
-    int startIndex = 0;
-
-    for (int i = 0; i <= value.length(); i++) {
-      bool endOfCommand = false;
-
-      if (i == value.length()) {
-        endOfCommand = true;
-      } else {
-        char c = value.charAt(i);
-
-        if (c == '\n' || c == '\r') {
-          endOfCommand = true;
-        }
+class RxCbs : public BLECharacteristicCallbacks {
+  void onWrite(BLECharacteristic *c) override {
+    String val = c->getValue();
+    if (val.length() == 0) return;
+    Serial.println("[BLE] 收到: " + val);
+    // 处理 App 下发的模式切换指令：MODE:0/1/2
+    if (val.startsWith("MODE:")) {
+      int m = val.substring(5).toInt();
+      if (m >= 0 && m <= 2) {
+        workMode = m;
+        Serial.printf("[BLE] App 切换模式: %s\n", modeNames[workMode]);
       }
-
-      if (endOfCommand) {
-        String oneCommand = value.substring(startIndex, i);
-        oneCommand.trim();
-
-        if (oneCommand.length() > 0) {
-          handleCommand(oneCommand);
-        }
-
-        startIndex = i + 1;
-      }
+    } else if (val == "ALARM:CANCEL") {
+      // App 远程取消报警
+      manualAlarm = false;
+      fallDetected = false; fallCountdown = false; fallState = 0;
+      ledcWrite(MOTOR_PIN, 0);
+      Serial.println("[BLE] App 取消报警");
     }
   }
 };
 
-// =====================================================
-// BLE 发送字符串
-// =====================================================
-
-void sendText(const String& text) {
-  if (!deviceConnected || txCharacteristic == nullptr) {
-    return;
-  }
-
-  String packet = text;
-
-  if (!packet.endsWith("\n")) {
-    packet += "\n";
-  }
-
-  txCharacteristic->setValue(packet.c_str());
-  txCharacteristic->notify();
-
-  Serial.print("TX: ");
-  Serial.print(packet);
+// ====================== 超声波 ======================
+float readDistance() {
+  digitalWrite(TRIG_PIN, LOW); delayMicroseconds(2);
+  digitalWrite(TRIG_PIN, HIGH); delayMicroseconds(10);
+  digitalWrite(TRIG_PIN, LOW);
+  long d = pulseIn(ECHO_PIN, HIGH, 30000);
+  if (d == 0) return -1.0;
+  return d * 0.0343 / 2.0;
 }
 
-// =====================================================
-// MPU6050 驱动
-// =====================================================
-
-void mpuWrite(uint8_t reg, uint8_t data) {
-  Wire.beginTransmission(MPU6050_ADDR);
-  Wire.write(reg);
-  Wire.write(data);
-  Wire.endTransmission();
+// ====================== 融合判断 ======================
+int fuseDistance(float low, float high) {
+  bool lo = (low > 0 && low < 150);
+  bool hi = (high > 0 && high < 150);
+  if (lo && hi) return 1;  // 大型障碍
+  if (lo && !hi) return 2; // 低位障碍
+  if (!lo && hi) return 3; // 悬空障碍
+  return 0;
+}
+String obstacleName(int t) {
+  switch(t) { case 1: return "LARGE"; case 2: return "LOW"; case 3: return "HIGH"; default: return "SAFE"; }
+}
+int dangerLevel(float low, float high) {
+  float m = 999;
+  if (low > 0 && low < m) m = low;
+  if (high > 0 && high < m) m = high;
+  if (m >= 150) return 0;
+  if (m < 30) return 3;
+  if (m < 80) return 2;
+  return 1;
 }
 
-int16_t mpuRead16(uint8_t reg) {
-  Wire.beginTransmission(MPU6050_ADDR);
-  Wire.write(reg);
-  Wire.endTransmission(false);
-  Wire.requestFrom((int)MPU6050_ADDR, 2);
-  return (Wire.read() << 8) | Wire.read();
-}
-
-bool mpuInit() {
-  Wire.begin(SDA_PIN, SCL_PIN);
-
-  Wire.beginTransmission(MPU6050_ADDR);
-  if (Wire.endTransmission() != 0) {
-    Serial.println("错误：找不到 MPU6050！请检查接线");
-    return false;
-  }
-
-  // 唤醒
-  mpuWrite(0x6B, 0x00);
-  // 加速度量程 ±8g
-  mpuWrite(0x1C, 0x10);
-  // 陀螺仪量程 ±500°/s
-  mpuWrite(0x1B, 0x08);
-
-  Serial.println("MPU6050 初始化成功");
-  return true;
-}
-
+// ====================== MPU6050 ======================
+void mpuWrite(uint8_t r, uint8_t d) { Wire.beginTransmission(MPU6050_ADDR); Wire.write(r); Wire.write(d); Wire.endTransmission(); }
+int16_t mpuRead16(uint8_t r) { Wire.beginTransmission(MPU6050_ADDR); Wire.write(r); Wire.endTransmission(false); Wire.requestFrom((int)MPU6050_ADDR, 2); return (Wire.read()<<8)|Wire.read(); }
 void mpuRead() {
-  accX = mpuRead16(0x3B) / 4096.0f;
-  accY = mpuRead16(0x3D) / 4096.0f;
-  accZ = mpuRead16(0x3F) / 4096.0f;
-
-  gyroX = mpuRead16(0x43) / 65.5f;
-  gyroY = mpuRead16(0x45) / 65.5f;
-  gyroZ = mpuRead16(0x47) / 65.5f;
-
-  accMagnitude = sqrt(accX * accX + accY * accY + accZ * accZ);
+  if (!mpuOnline) return;   // 掉线时不读，保持上一次值，避免 0 值误判失重
+  accX = mpuRead16(0x3B)/4096.0; accY = mpuRead16(0x3D)/4096.0; accZ = mpuRead16(0x3F)/4096.0;
+  accMag = sqrt(accX*accX+accY*accY+accZ*accZ);
 }
-
-// =====================================================
-// 跌倒检测状态机：失重 -> 撞击 -> 确认
-// =====================================================
-
 void checkFall() {
+  if (!mpuOnline) return;   // MPU 掉线时不做跌倒检测，避免误报
   switch (fallState) {
-    case 0:  // 正常，等待失重
-      if (accMagnitude < FREEFALL_THRESHOLD) {
-        fallState = 1;
-        fallTimer = millis();
-        Serial.println("[跌倒检测] 检测到失重");
-      }
+    case 0:
+      if (accMag < 0.4) { fallState = 1; fallTimer = millis(); }
       break;
-
-    case 1:  // 已失重，等待撞击
-      if (accMagnitude > FALL_THRESHOLD) {
-        fallState = 2;
-        fallDetected = true;
-        alarmState = "FALL_DETECTED";
-        Serial.print("[跌倒检测] 检测到撞击，加速度=");
-        Serial.println(accMagnitude);
-
-        // 立即通知手机
-        sendText("FALL:1");
-        sendCurrentStatus();
-      } else if (millis() - fallTimer > 2000) {
-        fallState = 0;  // 超时恢复
-        Serial.println("[跌倒检测] 失重超时，恢复正常");
-      }
-      break;
-
-    case 2:  // 已确认跌倒，等待用户处理
-      // 用户通过手机发送 ALARM:CANCEL 后会重置 fallState
+    case 1:
+      if (accMag > 2.5) {
+        fallState = 2; fallDetected = true; fallCountdown = true;
+        fallCountdownStart = millis(); fallVoicePlayed = false;
+        encoderBaseFall = encoderCount;  // 记录跌倒起始基准，用于取消检测
+        Serial.println("[跌倒] 确认！开始30秒倒计时");
+        sendBLE("FALL:1\n");
+      } else if (millis() - fallTimer > 2000) fallState = 0;
       break;
   }
 }
 
-// =====================================================
-// 发送当前完整状态
-// =====================================================
-
-void sendCurrentStatus() {
-  String distanceText = "NO_ECHO";
-
-  if (currentDistanceCm >= 0.0f) {
-    distanceText = String(currentDistanceCm, 1);
-  }
-
-  // 示例：STATUS:MODE=DAILY,DIST=125.4,STATE=NOTICE,ALARM=NORMAL
-  String statusText =
-    "STATUS:MODE=" + workMode +
-    ",DIST=" + distanceText +
-    ",STATE=" + currentState +
-    ",ALARM=" + alarmState;
-
-  sendText(statusText);
+// ====================== 电量 ======================
+float readBattery() {
+  int raw = analogRead(BATT_PIN);
+  float v = (raw/4095.0)*3.3*2.0;
+  float p = (v-3.0)/(4.2-3.0)*100;
+  if (p<0) p=0; if (p>100) p=100;
+  return p;
 }
 
-// =====================================================
-// 处理手机发送的命令
-// =====================================================
+// ====================== 编码器中断 ======================
+void IRAM_ATTR encodeA() { if (digitalRead(ENC_A)==digitalRead(ENC_B)) encoderCount++; else encoderCount--; }
+void IRAM_ATTR encodeB() { if (digitalRead(ENC_A)==digitalRead(ENC_B)) encoderCount--; else encoderCount++; }
 
-void handleCommand(String command) {
-  command.trim();
-  command.toUpperCase();
-
-  Serial.print("COMMAND: ");
-  Serial.println(command);
-
-  // 查询当前状态
-  if (command == "STATUS" ||
-      command == "STATUS?" ||
-      command == "STATUS:GET") {
-
-    sendCurrentStatus();
-  }
-
-  // 日常模式
-  else if (command == "MODE:DAILY" ||
-           command == "MODE:NORMAL") {
-
-    workMode = "DAILY";
-    manualAlarm = false;
-    alarmState = "NORMAL";
-    fallDetected = false;
-    fallState = 0;
-
-    ledcWrite(MOTOR_PIN, 0);
-
-    sendText("ACK:MODE:DAILY");
-    sendCurrentStatus();
-  }
-
-  // 夜间模式
-  else if (command == "MODE:NIGHT") {
-    workMode = "NIGHT";
-    manualAlarm = false;
-    alarmState = "NORMAL";
-    fallDetected = false;
-    fallState = 0;
-
-    ledcWrite(MOTOR_PIN, 0);
-
-    sendText("ACK:MODE:NIGHT");
-    sendCurrentStatus();
-  }
-
-  // 安静模式
-  else if (command == "MODE:SILENT") {
-    workMode = "SILENT";
-    manualAlarm = false;
-    alarmState = "NORMAL";
-    fallDetected = false;
-    fallState = 0;
-
-    ledcWrite(MOTOR_PIN, 0);
-
-    sendText("ACK:MODE:SILENT");
-    sendCurrentStatus();
-  }
-
-  // 紧急模式
-  else if (command == "MODE:EMERGENCY") {
-    workMode = "EMERGENCY";
-    manualAlarm = true;
-    alarmState = "MANUAL_ACTIVE";
-
-    sendText("ACK:MODE:EMERGENCY");
-    sendCurrentStatus();
-  }
-
-  // 主动报警
-  else if (command == "ALARM:MANUAL" ||
-           command == "BUZZER:ON") {
-
-    manualAlarm = true;
-    alarmState = "MANUAL_ACTIVE";
-
-    sendText("ACK:ALARM:MANUAL");
-    sendCurrentStatus();
-  }
-
-  // 取消报警（也用于取消跌倒报警）
-  else if (command == "ALARM:CANCEL" ||
-           command == "BUZZER:OFF") {
-
-    manualAlarm = false;
-    alarmState = "CANCELLED";
-    fallDetected = false;
-    fallState = 0;
-
-    ledcWrite(MOTOR_PIN, 0);
-
-    sendText("ACK:ALARM:CANCEL");
-    sendCurrentStatus();
-  }
-
-  // 未知命令
-  else {
-    sendText("ERR:UNKNOWN_COMMAND");
+// ====================== 按钮中断 ======================
+void IRAM_ATTR onButton() {
+  if (digitalRead(BUTTON_PIN) == LOW) {
+    buttonDownTime = millis();
+    buttonHeld = true;
+    longPressTriggered = false;
+  } else {
+    if (!longPressTriggered) {
+      buttonClickCount++;
+      if (buttonClickCount == 1) firstClickTime = millis();
+    }
+    buttonHeld = false;
   }
 }
 
-// =====================================================
-// HC-SR04 测距
-// =====================================================
-
-float readDistanceCm() {
-  digitalWrite(TRIG_PIN, LOW);
-  delayMicroseconds(3);
-
-  digitalWrite(TRIG_PIN, HIGH);
-  delayMicroseconds(10);
-  digitalWrite(TRIG_PIN, LOW);
-
-  unsigned long duration = pulseIn(ECHO_PIN, HIGH, 30000UL);
-
-  if (duration == 0) {
-    return -1.0f;
-  }
-
-  return duration * 0.0343f / 2.0f;
+// ====================== 振动 ======================
+void updateMotor(int level) {
+  int pwm = level==3?255 : level==2?150 : level==1?80 : 0;
+  ledcWrite(MOTOR_PIN, pwm);
 }
 
-// =====================================================
-// 根据距离判断障碍等级
-// =====================================================
-
-String classifyDistance(float distance) {
-  if (distance < 0.0f) {
-    return "NO_ECHO";
-  }
-
-  if (distance < 30.0f) {
-    return "DANGER";
-  }
-
-  if (distance < 80.0f) {
-    return "WARNING";
-  }
-
-  if (distance < 150.0f) {
-    return "NOTICE";
-  }
-
-  return "SAFE";
+// ====================== BLE 发送 ======================
+void sendBLE(String msg) {
+  if (deviceConnected) { pTxCharacteristic->setValue(msg.c_str()); pTxCharacteristic->notify(); }
 }
 
-// =====================================================
-// 更新振动马达
-// =====================================================
+// ====================== 展示 / 调试 ======================
+// 启动横幅
+void printBanner() {
+  Serial.println();
+  Serial.println("==============================================");
+  Serial.println("     SmartCane-S3  智能盲杖主控");
+  Serial.println("     MAC: " + WiFi.macAddress());
+  Serial.println("==============================================");
+}
 
-void updateFeedback() {
-  // 跌倒检测触发：持续强振动
-  if (fallDetected) {
-    ledcWrite(MOTOR_PIN, 255);
-    return;
-  }
+// 启动自检：逐个报告模块状态
+void selfTest() {
+  Serial.println("\n---------- 启动自检 ----------");
+  Wire.beginTransmission(MPU6050_ADDR);
+  bool mpuOk = (Wire.endTransmission() == 0);
+  Serial.printf("  [MPU6050]  %s\n", mpuOk ? "OK ✓" : "未找到 ✗（跌倒检测将禁用）");
+  Serial.printf("  [SYN6288]  %s\n", "串口就绪 ✓");
+  Serial.printf("  [GPS]      %s\n", gpsSerial.available() ? "有数据流 ✓" : "等待信号…");
+  Serial.printf("  [ESP-NOW]  %s\n", espNowReady ? "就绪 ✓" : "失败 ✗");
+  Serial.printf("  [前哨]     %s\n", (millis() - highDistTime < 2000) ? "在线 ✓" : "等待数据…");
+  Serial.printf("  [BLE]      %s\n", "广播中…");
+  Serial.println("------------------------------");
+}
 
-  // 主动报警或紧急模式
-  if (manualAlarm || workMode == "EMERGENCY") {
-    ledcWrite(MOTOR_PIN, 220);
-    return;
-  }
+// 完整状态汇总（status 命令触发，不再自动刷屏）
+void printStatus() {
+  Serial.println("\n---------- 当前状态 ----------");
+  Serial.printf("  低距=%.0fcm  高距=%.0fcm  融合等级=%d\n", lowDist, highDist, fusedLevel);
+  Serial.printf("  模式=%s  电量=%.0f%%\n", modeNames[workMode], batteryPct);
+  Serial.printf("  加速度 X=%.2f Y=%.2f Z=%.2f  合=%.2fg  跌倒状态=%d  MPU=%s\n", accX, accY, accZ, accMag, fallState, mpuOnline ? "在线" : "离线");
+  Serial.printf("  主动报警=%d  倒计时=%d  编码器计数=%ld\n", manualAlarm ? 1 : 0, fallCountdown ? 1 : 0, encoderCount);
+  Serial.printf("  GPS: %s  (%.6f, %.6f)  卫星=%d\n", gpsValid ? "有效" : "无效", gpsLat, gpsLng, gps.satellites.value());
+  Serial.printf("  BLE=%s  前哨=%s  自动控制=%s\n",
+                deviceConnected ? "已连" : "未连",
+                (highDist >= 0) ? "在线" : "离线",
+                autoLoop ? "开" : "暂停");
+  Serial.println("------------------------------");
+}
 
-  // 安静模式关闭所有反馈
-  if (workMode == "SILENT") {
+// 命令分发：演示/调试用。输入 help 查看全部命令。
+void processCommand(String cmd) {
+  cmd.trim();
+  if (cmd.length() == 0) return;
+  Serial.println("CMD> " + cmd);
+
+  if (cmd == "help" || cmd == "?") {
+    Serial.println("命令列表:");
+    Serial.println("  status    打印完整状态");
+    Serial.println("  selftest  重新自检模块");
+    Serial.println("  tts       测试语音（依次播报）");
+    Serial.println("  motor <0-255>  设置振动强度");
+    Serial.println("  mpu       打印加速度");
+    Serial.println("  gps       打印 GPS 数据");
+    Serial.println("  dist      打印当前距离");
+    Serial.println("  mode <0-2> 切换模式(0正常 1安静 2夜间)");
+    Serial.println("  fall      模拟跌倒(触发30秒倒计时)");
+    Serial.println("  alarm     切换主动报警");
+    Serial.println("  photo     拍照(通知前哨)");
+    Serial.println("  pause / resume  暂停/恢复自动控制");
+  } else if (cmd == "status") {
+    printStatus();
+  } else if (cmd == "selftest") {
+    selfTest();
+  } else if (cmd == "tts") {
+    Serial.println("测试语音…");
+    tts_speak(msg_obstacle, sizeof(msg_obstacle));
+    tts_speak(msg_fall, sizeof(msg_fall));
+    tts_speak(msg_lowbattery, sizeof(msg_lowbattery));
+  } else if (cmd.startsWith("motor ")) {
+    int v = cmd.substring(6).toInt();
+    if (v < 0) v = 0; if (v > 255) v = 255;
+    ledcWrite(MOTOR_PIN, v);
+    Serial.printf("振动马达 PWM=%d（pause 下不会被覆盖）\n", v);
+  } else if (cmd == "motor") {
     ledcWrite(MOTOR_PIN, 0);
-    return;
-  }
-
-  // 无回波或安全状态关闭反馈
-  if (currentState == "SAFE" ||
-      currentState == "NO_ECHO") {
+    Serial.println("振动马达关闭");
+  } else if (cmd == "mpu") {
+    mpuRead();
+    Serial.printf("加速度 X=%.2f Y=%.2f Z=%.2f 合=%.2fg\n", accX, accY, accZ, accMag);
+  } else if (cmd == "gps") {
+    Serial.printf("GPS 有效=%d  (%.6f, %.6f)  卫星=%d\n", gpsValid, gpsLat, gpsLng, gps.satellites.value());
+  } else if (cmd == "dist") {
+    Serial.printf("低距=%.0fcm  高距=%.0fcm\n", lowDist, highDist);
+  } else if (cmd.startsWith("mode ")) {
+    int m = cmd.substring(5).toInt();
+    if (m >= 0 && m <= 2) {
+      workMode = m;
+      Serial.printf("模式切换: %s\n", modeNames[workMode]);
+      sendBLE(String("MODE:") + (workMode == 0 ? "NORMAL" : workMode == 1 ? "SILENT" : "NIGHT") + "\n");
+    } else { Serial.println("用法: mode <0-2>"); }
+  } else if (cmd == "fall") {
+    Serial.println(">>> 模拟跌倒，开始30秒倒计时（旋转旋钮或按按钮可取消）");
+    fallDetected = true; fallCountdown = true; fallState = 2;
+    fallCountdownStart = millis(); fallVoicePlayed = false;
+    encoderBaseFall = encoderCount;
+    sendBLE("FALL:1\n");
+  } else if (cmd == "alarm") {
+    manualAlarm = !manualAlarm;
+    if (manualAlarm) {
+      Serial.println("主动报警：开");
+      sendBLE("ALARM:MANUAL\n"); ledcWrite(MOTOR_PIN, 255);
+    } else {
+      Serial.println("主动报警：关");
+      sendBLE("ALARM:CANCEL\n"); ledcWrite(MOTOR_PIN, 0);
+    }
+  } else if (cmd == "photo" || cmd == "capture") {
+    Serial.println("拍照：通知前哨预热，并通知手机拉取 /capture");
+    sendCmdToScout(1); sendBLE("CAMERA:CAPTURE\n");
+  } else if (cmd == "pause") {
+    autoLoop = false;
     ledcWrite(MOTOR_PIN, 0);
-    return;
-  }
-
-  // 较远障碍：低强度
-  if (currentState == "NOTICE") {
-    ledcWrite(MOTOR_PIN, 70);
-  }
-
-  // 中距离障碍：中强度
-  else if (currentState == "WARNING") {
-    ledcWrite(MOTOR_PIN, 150);
-  }
-
-  // 近距离障碍：强振动
-  else if (currentState == "DANGER") {
-    ledcWrite(MOTOR_PIN, 255);
+    Serial.println("自动控制已暂停（测距/反馈停止），可单独调试外设");
+  } else if (cmd == "resume") {
+    autoLoop = true;
+    Serial.println("自动控制已恢复");
+  } else {
+    Serial.println("未知命令，输入 help 查看列表");
   }
 }
 
-// =====================================================
-// 初始化 BLE
-// =====================================================
-
-void setupBle() {
-  BLEDevice::init(DEVICE_NAME);
-
-  bleServer = BLEDevice::createServer();
-  bleServer->setCallbacks(new ServerCallbacks());
-
-  BLEService* service = bleServer->createService(SERVICE_UUID);
-
-  // TX：ESP32-S3 -> 手机，Notify
-  txCharacteristic = service->createCharacteristic(
-    TX_UUID,
-    BLECharacteristic::PROPERTY_NOTIFY
-  );
-
-  txCharacteristic->addDescriptor(new BLE2902());
-
-  // RX：手机 -> ESP32-S3，Write
-  rxCharacteristic = service->createCharacteristic(
-    RX_UUID,
-    BLECharacteristic::PROPERTY_WRITE |
-    BLECharacteristic::PROPERTY_WRITE_NR
-  );
-
-  rxCharacteristic->setCallbacks(new RxCallbacks());
-
-  service->start();
-
-  BLEAdvertising* advertising = BLEDevice::getAdvertising();
-  advertising->addServiceUUID(SERVICE_UUID);
-  advertising->setScanResponse(true);
-  advertising->setMinPreferred(0x06);
-  advertising->setMinPreferred(0x12);
-
-  BLEDevice::startAdvertising();
-
-  Serial.println("BLE advertising started");
-  Serial.print("Device name: ");
-  Serial.println(DEVICE_NAME);
+// 非阻塞串口按行读取：逐字节进缓冲，遇换行才执行命令，不阻塞主循环
+void handleSerialCommand() {
+  static String lineBuf;
+  while (Serial.available()) {
+    int c = Serial.read();
+    if (c == '\n' || c == '\r') {
+      if (lineBuf.length() > 0) { processCommand(lineBuf); lineBuf = ""; }
+    } else {
+      lineBuf += (char)c;
+      if (lineBuf.length() > 64) lineBuf = "";  // 防止缓冲过长
+    }
+  }
 }
 
-// =====================================================
-// Arduino 初始化
-// =====================================================
-
+// ====================== 初始化 ======================
 void setup() {
   Serial.begin(115200);
-  delay(500);
+  Serial.println("\n===== 盲杖启动 =====");
 
-  Serial.println("\n===== 智能盲杖主固件启动 =====");
-
-  // HC-SR04
-  pinMode(TRIG_PIN, OUTPUT);
-  pinMode(ECHO_PIN, INPUT);
-  digitalWrite(TRIG_PIN, LOW);
-
-  // 振动马达 PWM
+  pinMode(TRIG_PIN, OUTPUT); pinMode(ECHO_PIN, INPUT); digitalWrite(TRIG_PIN, LOW);
   ledcAttach(MOTOR_PIN, MOTOR_PWM_FREQ, MOTOR_PWM_BITS);
-  ledcWrite(MOTOR_PIN, 0);
+
+  pinMode(BUTTON_PIN, INPUT_PULLUP);
+  attachInterrupt(digitalPinToInterrupt(BUTTON_PIN), onButton, CHANGE);
+
+  pinMode(ENC_A, INPUT_PULLUP); pinMode(ENC_B, INPUT_PULLUP);
+  attachInterrupt(digitalPinToInterrupt(ENC_A), encodeA, CHANGE);
+  attachInterrupt(digitalPinToInterrupt(ENC_B), encodeB, CHANGE);
+
+  analogReadResolution(12);
 
   // MPU6050
-  if (!mpuInit()) {
-    Serial.println("警告：MPU6050 未连接，跌倒检测不可用");
+  Wire.begin(SDA_PIN, SCL_PIN);
+  Wire.beginTransmission(MPU6050_ADDR);
+  if (Wire.endTransmission() == 0) {
+    mpuWrite(0x6B, 0x00); mpuWrite(0x1C, 0x10);
+    mpuOnline = true;
+    Serial.println("MPU6050 OK");
+  } else {
+    Serial.println("[警告] MPU6050 未找到，跌倒检测已禁用！请检查 SDA/SCL 接线");
+  }
+
+  // SYN6288
+  tts_init();
+
+  // GPS（Serial1，与 TTS 用不同引脚，互不冲突）
+  gpsSerial.begin(9600, SERIAL_8N1, GPS_RX_PIN, GPS_TX_PIN);
+  Serial.println("GPS 就绪（等待卫星信号）");
+
+  // ESP-NOW（双向）
+  WiFi.mode(WIFI_STA);
+  if (esp_now_init() == ESP_OK) {
+    espNowReady = true;
+    esp_now_register_recv_cb(OnDataRecv);
+    esp_now_peer_info_t peer;
+    memset(&peer, 0, sizeof(peer));
+    memcpy(peer.peer_addr, scoutMac, 6);
+    peer.encrypt = false;
+    esp_now_add_peer(&peer);
+    Serial.println("ESP-NOW 就绪");
   }
 
   // BLE
-  setupBle();
+  BLEDevice::init(DEVICE_NAME);
+  pServer = BLEDevice::createServer();
+  pServer->setCallbacks(new ServerCallbacks());
+  BLEService *svc = pServer->createService(SERVICE_UUID);
+  pTxCharacteristic = svc->createCharacteristic(TX_UUID, BLECharacteristic::PROPERTY_NOTIFY);
+  pTxCharacteristic->addDescriptor(new BLE2902());
+  BLECharacteristic *rx = svc->createCharacteristic(RX_UUID, BLECharacteristic::PROPERTY_WRITE | BLECharacteristic::PROPERTY_WRITE_NR);
+  rx->setCallbacks(new RxCbs());
+  svc->start(); pServer->getAdvertising()->start();
 
-  Serial.println("初始化完成");
-  Serial.println("----------------------------------------");
+  // 启动横幅 + 自检报告
+  printBanner();
+  selfTest();
+  Serial.println("初始化完成。当前模式：正常");
+  Serial.println("操作：三按报警 / 旋转切模式 / 长按拍照");
+  Serial.println("串口输入 help 查看调试命令");
 }
 
-// =====================================================
-// 主循环
-// =====================================================
-
+// ====================== 主循环 ======================
 void loop() {
   unsigned long now = millis();
+  tts_tick();   // 非阻塞发送队列中的语音
+  handleSerialCommand();   // 串口调试命令
 
-  // 每 200 ms 测量一次距离
-  if (now - lastMeasureMillis >= 200) {
-    lastMeasureMillis = now;
+  // ---- 每 200ms 测距 ----
+  static unsigned long lastMeasure = 0;
+  static int lastType = -1;
+  static int lastDanger = -1;
+  if (autoLoop && now - lastMeasure >= 200) {
+    lastMeasure = now;
+    // 前哨掉线/超时则忽略高位距离，避免永久误报悬空障碍
+    if (highDist > 0 && (now - highDistTime > HIGH_DIST_TIMEOUT)) highDist = -1;
+    lowDist = readDistance();
+    int type = fuseDistance(lowDist, highDist);
+    int danger = dangerLevel(lowDist, highDist);
+    if (fallDetected || manualAlarm) danger = 3;
+    fusedLevel = danger;
+    updateMotor(danger);
 
-    currentDistanceCm = readDistanceCm();
-    String newState = classifyDistance(currentDistanceCm);
-
-    // 只在状态变化时打印，减少刷屏
-    if (newState != currentState) {
-      currentState = newState;
-      Serial.print("[状态变化] ");
-      Serial.print(currentState);
-      if (currentDistanceCm >= 0.0f) {
-        Serial.print(" (");
-        Serial.print(currentDistanceCm, 0);
-        Serial.print("cm)");
-      }
-      Serial.println();
+    // 非语言音调编码：障碍存在时按节奏发短音（事件触发、障碍消失即停）。
+    // 不再播报"前方有障碍物"等中文，避免嘈杂；模式切换仍保留中文语音。
+    if (type != 0 && danger != 0 && !fallDetected && !manualAlarm) {
+      playObstacleBeep(type, danger, now);
     }
 
-    updateFeedback();
+    // 仅在类型或危险等级变化时打印，且最小间隔 500ms 防刷屏
+    static unsigned long lastPrint = 0;
+    if ((type != lastType || danger != lastDanger) && (now - lastPrint > 500)) {
+      lastType = type; lastDanger = danger; lastPrint = now;
+      Serial.printf("[测距] 低=%.0f 高=%.0f 类型=%s 等级=%d 模式=%s\n",
+        lowDist, highDist, obstacleName(type).c_str(), danger, modeNames[workMode]);
+    }
   }
 
-  // 每 100 ms 读取一次 MPU6050 并检测跌倒
-  if (now - lastMpuMillis >= 100) {
-    lastMpuMillis = now;
-
-    mpuRead();
-    checkFall();
-    // 姿态数据不再打印，只在跌倒时打印（checkFall 内部会打印）
+  // 状态汇总：不再每 3 秒自动刷屏，改为仅在跌倒状态变化时打印，或用 status 命令查看
+  static int lastFallState = -1;
+  if (fallState != lastFallState) {
+    lastFallState = fallState;
+    Serial.printf("[MPU] 加速度合=%.2fg 跌倒状态机=%d\n", accMag, fallState);
   }
 
-  // 每 500 ms 向手机发送一次完整状态
-  if (deviceConnected && now - lastNotifyMillis >= 500) {
-    lastNotifyMillis = now;
-    sendCurrentStatus();
+  // ---- 每 100ms MPU6050 ----
+  static unsigned long lastMpu = 0;
+  if (now - lastMpu >= 100) { lastMpu = now; mpuRead(); checkFall(); }
+
+  // ---- GPS：非阻塞读取 NMEA ----
+  while (gpsSerial.available()) {
+    gps.encode(gpsSerial.read());
+  }
+  if (gps.location.isUpdated()) {
+    gpsValid = gps.location.isValid();
+    if (gpsValid) { gpsLat = gps.location.lat(); gpsLng = gps.location.lng(); }
   }
 
-  // 断线后重新开始 BLE 广播
-  if (!deviceConnected && oldDeviceConnected) {
-    delay(300);
-    bleServer->startAdvertising();
-    oldDeviceConnected = false;
-    Serial.println("[BLE] 断线，重新广播");
+  // ---- 每 5 秒电量 ----
+  static unsigned long lastBatt = 0;
+  static bool lowBattPlayed = false;   // 低电量语音是否已播报（全局共享）
+  if (now - lastBatt >= 5000) {
+    lastBatt = now;
+    batteryPct = readBattery();
+    if (batteryPct < 20) {
+      // 低电量语音提醒（安静模式下也播报）
+      if (!lowBattPlayed) { tts_speak(msg_lowbattery, sizeof(msg_lowbattery)); lowBattPlayed = true; }
+    } else {
+      lowBattPlayed = false;  // 电量恢复，允许下次再次播报
+    }
   }
 
-  // 新连接建立后发送欢迎消息和当前状态
-  if (deviceConnected && !oldDeviceConnected) {
-    oldDeviceConnected = true;
-    sendText("HELLO:SMART_CANE_S3");
-    sendCurrentStatus();
-    Serial.println("[BLE] 手机已连接");
+  // ---- 每 500ms BLE 发送 ----
+  static unsigned long lastBle = 0;
+  if (now - lastBle >= 500) {
+    lastBle = now;
+    int type = fuseDistance(lowDist, highDist);
+    int danger = dangerLevel(lowDist, highDist);
+    String msg = "DIST:" + String((int)lowDist) + ",HIGH:" + String((int)highDist)
+      + ",TYPE:" + obstacleName(type) + ",LEVEL:" + String(danger)
+      + ",MODE:" + String(workMode) + ",BATT:" + String((int)batteryPct)
+      + ",ALARM:" + String(manualAlarm ? "MANUAL" : (fallDetected ? "FALL" : "NORMAL"))
+      + ",LAT:" + (gpsValid ? String(gpsLat, 6) : "0")
+      + ",LNG:" + (gpsValid ? String(gpsLng, 6) : "0") + "\n";
+    sendBLE(msg);
   }
 
-  delay(5);
+  // ---- 按钮长按 1 秒 → 拍照 ----
+  if (buttonHeld && !longPressTriggered && (now - buttonDownTime > 1000)) {
+    longPressTriggered = true;
+    Serial.println("[长按] 拍照！通知前哨");
+    sendCmdToScout(1);
+    sendBLE("CAMERA:CAPTURE\n");
+  }
+
+  // ---- 三连按 → 主动报警 ----
+  if (buttonClickCount > 0 && (now - firstClickTime > 1000)) {
+    if (buttonClickCount >= 3) {
+      manualAlarm = !manualAlarm;
+      if (manualAlarm) {
+        Serial.println("[三连按] 主动报警！");
+        for (int i = 0; i < 3; i++) { sendBLE("ALARM:MANUAL\n"); delay(100); }
+        ledcWrite(MOTOR_PIN, 255);
+        tts_speak(msg_alarmed, sizeof(msg_alarmed));
+      } else {
+        Serial.println("[三连按] 取消报警");
+        sendBLE("ALARM:CANCEL\n");
+        ledcWrite(MOTOR_PIN, 0);
+      }
+    }
+    buttonClickCount = 0;
+  }
+
+  // ---- 旋转 180° 切换模式 ----
+  long delta = encoderCount - encoderBase;
+  if (abs(delta) >= 36) {
+    encoderBase = encoderCount;
+    workMode = (workMode + 1) % 3;
+    Serial.printf("[旋转] 切换模式: %s\n", modeNames[workMode]);
+    sendBLE(String("MODE:") + (workMode==0?"NORMAL":workMode==1?"SILENT":"NIGHT") + "\n");
+  }
+
+  // ---- 跌倒 30 秒倒计时 ----
+  if (fallCountdown) {
+    static unsigned long lastPrompt = 0;
+    static int lastSec = -1;
+    int remaining = 30 - (int)((now - fallCountdownStart) / 1000);
+
+    // 进入跌倒时播报一次
+    if (!fallVoicePlayed) {
+      fallVoicePlayed = true;
+      tts_speak(msg_fall, sizeof(msg_fall));
+      tts_speak(msg_countdown, sizeof(msg_countdown));
+      tts_speak(msg_cancel, sizeof(msg_cancel));
+    }
+
+    // 每秒振动短促 + 串口提示（无蜂鸣器，用振动反馈倒计时）
+    if (remaining != lastSec && remaining > 0) {
+      lastSec = remaining;
+      Serial.printf("[跌倒] 倒计时 %d秒\n", remaining);
+      ledcWrite(MOTOR_PIN, 200);
+      delay(60);
+      ledcWrite(MOTOR_PIN, 255);  // 跌倒期间持续强振
+    }
+
+    // 每 3 秒重发 FALL:1
+    if (now - lastPrompt > 3000) {
+      lastPrompt = now;
+      sendBLE("FALL:1\n");
+    }
+
+    // 30 秒到 → 确认报警
+    if (now - fallCountdownStart > 30000) {
+      fallCountdown = false;
+      Serial.println("[跌倒] 30秒到！自动家属报警");
+      for (int i = 0; i < 3; i++) { sendBLE("FALL:CONFIRMED\n"); delay(100); }
+      ledcWrite(MOTOR_PIN, 255);
+      tts_speak(msg_alarmed, sizeof(msg_alarmed));
+    }
+
+    // 旋钮或按键取消（用跌倒起始基准，与切模式互不影响）
+    if (abs(encoderCount - encoderBaseFall) >= 4 || buttonClickCount > 0) {
+      fallCountdown = false;
+      fallDetected = false;
+      fallState = 0;
+      buttonClickCount = 0;
+      // 同步切模式基准，避免取消动作被误判为切模式
+      encoderBase = encoderCount;
+      Serial.println("[跌倒] 已取消");
+      sendBLE("FALL:CANCELLED\n");
+      ledcWrite(MOTOR_PIN, 0);
+    }
+  }
 }

@@ -3,8 +3,8 @@
  * 接线：
  *   MPU6050 VCC → ESP32 3.3V
  *   MPU6050 GND → ESP32 GND
- *   MPU6050 SDA → GPIO 21
- *   MPU6050 SCL → GPIO 22
+ *   MPU6050 SDA → GPIO 10
+ *   MPU6050 SCL → GPIO 9
  *
  * 烧录后打开串口监视器(115200)，手机连上 BLE 即可看到姿态数据
  */
@@ -23,8 +23,8 @@
 
 // ====================== MPU6050 参数 ======================
 #define MPU6050_ADDR 0x68
-#define SDA_PIN 21
-#define SCL_PIN 20
+#define SDA_PIN 10
+#define SCL_PIN 9
 
 // ====================== 跌倒检测参数 ======================
 #define FALL_THRESHOLD 2.5    // 加速度合矢量阈值(g)，超过此值判定为撞击
