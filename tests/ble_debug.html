@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>智能盲杖 BLE 调试</title>
+<style>
+  body { font-family: "Microsoft YaHei", monospace; margin: 16px; background:#1e1e1e; color:#ddd; }
+  button { padding:8px 16px; margin:4px 4px 4px 0; background:#0a7; color:#fff; border:none; border-radius:4px; cursor:pointer; font-size:14px; }
+  button:disabled { background:#555; cursor:not-allowed; }
+  button.danger { background:#c33; }
+  button.warn { background:#e80; }
+  #log { width:100%; height:360px; overflow-y:auto; background:#000; color:#0f0; padding:8px; font-size:12px; border:1px solid #444; white-space:pre-wrap; }
+  .row { margin:6px 0; }
+  #status { font-weight:bold; color:#0a7; }
+  input[type=text] { width:280px; padding:6px; background:#333; color:#fff; border:1px solid #555; border-radius:3px; }
+  .parsed { background:#222; border-left:3px solid #0a7; padding:6px; margin:4px 0; font-size:13px; }
+</style>
+</head>
+<body>
+<h2>智能盲杖 BLE 调试面板</h2>
+
+<div class="row">
+  <button id="btnConnect">连接盲杖蓝牙</button>
+  <button id="btnDisconnect" disabled>断开</button>
+  <span id="status">未连接</span>
+</div>
+
+<div class="row">
+  <button id="btnMode0">切正常模式</button>
+  <button id="btnMode1">切安静模式</button>
+  <button id="btnMode2">切夜间模式</button>
+  <button id="btnCancel" class="danger">取消报警</button>
+</div>
+
+<div class="row">
+  <input type="text" id="cmdInput" placeholder="输入自定义指令，如 MODE:1 或 ALARM:CANCEL">
+  <button id="btnSend">发送</button>
+</div>
+
+<h4>最新状态解析</h4>
+<div id="parsed" class="parsed">等待数据…</div>
+
+<h4>原始收发日志</h4>
+<div id="log"></div>
+
+<script>
+const SERVICE_UUID = '6e400001-b5a3-f393-e0a9-e50e24dcca9e';
+const RX_UUID       = '6e400002-b5a3-f393-e0a9-e50e24dcca9e'; // 盲杖 RX（写）
+const TX_UUID       = '6e400003-b5a3-f393-e0a9-e50e24dcca9e'; // 盲杖 TX（通知）
+
+let rxChar = null, txChar = null, device = null;
+let log = document.getElementById('log');
+let parsed = document.getElementById('parsed');
+let buf = '';
+
+function appendLog(s) {
+  const t = new Date().toLocaleTimeString();
+  log.textContent += `[${t}] ${s}\n`;
+  log.scrollTop = log.scrollHeight;
+}
+
+function setStatus(s, ok=true) {
+  parsed.style.borderLeftColor = ok ? '#0a7' : '#c33';
+  document.getElementById('status').textContent = s;
+}
+
+// 解析状态字符串，友好显示
+function parseStatus(line) {
+  const parts = {};
+  line.split(',').forEach(p => {
+    const [k, v] = p.split(':');
+    if (k) parts[k.trim()] = v.trim();
+  });
+  const modeNames = ['正常', '安静', '夜间'];
+  const alarmText = parts['ALARM'] === 'MANUAL' ? '🚨主动报警' :
+                    parts['ALARM'] === 'FALL' ? '🤕跌倒中' : '✅正常';
+  const fallStateText = ['空闲', '失重中', '已确认跌倒'];
+  const fallIdx = parseInt(parts['FALLST'] || 0);
+  const modeIdx = parseInt(parts['MODE'] || 0);
+  parsed.innerHTML = `
+    <b>障碍</b>: 低位 ${parts['DIST']||'-'}cm / 高位 ${parts['HIGH']||'-'}cm → 类型 ${parts['TYPE']||'-'} 等级 ${parts['LEVEL']||'-'}<br>
+    <b>模式</b>: ${modeNames[modeIdx] || parts['MODE']}　<b>电量</b>: ${parts['BATT']||'-'}%<br>
+    <b>报警</b>: ${alarmText}　<b>跌倒状态</b>: ${fallStateText[fallIdx] || parts['FALLST']}<br>
+    <b>加速度合</b>: ${parts['ACC']||'-'}g　<b>MPU</b>: ${parts['MPU']==='1' ? '在线' : '离线'}<br>
+    <b>编码器</b>: ${parts['ENC']||'-'}<br>
+    <b>GPS</b>: (${parts['LAT']||'-'}, ${parts['LNG']||'-'})
+  `;
+}
+
+document.getElementById('btnConnect').onclick = async () => {
+  try {
+    device = await navigator.bluetooth.requestDevice({
+      filters: [{ namePrefix: 'SmartCane' }],
+      optionalServices: [SERVICE_UUID]
+    });
+    appendLog('正在连接 ' + device.name + ' ...');
+    const server = await device.gatt.connect();
+    appendLog('GATT 已连接');
+    const service = await server.getPrimaryService(SERVICE_UUID);
+    rxChar = await service.getCharacteristic(RX_UUID);
+    txChar = await service.getCharacteristic(TX_UUID);
+    await txChar.startNotifications();
+    txChar.addEventListener('characteristicvaluechanged', e => {
+      const dec = new TextDecoder();
+      buf += dec.decode(e.target.value);
+      let idx;
+      while ((idx = buf.indexOf('\n')) >= 0) {
+        const line = buf.slice(0, idx).trim();
+        buf = buf.slice(idx + 1);
+        if (line) {
+          appendLog('← ' + line);
+          if (line.startsWith('DIST:')) parseStatus(line);
+        }
+      }
+    });
+    setStatus('已连接 ' + device.name, true);
+    document.getElementById('btnConnect').disabled = true;
+    document.getElementById('btnDisconnect').disabled = false;
+    appendLog('通知已开启，等待数据…');
+  } catch (err) {
+    appendLog('连接失败: ' + err);
+    setStatus('连接失败', false);
+  }
+};
+
+document.getElementById('btnDisconnect').onclick = () => {
+  if (device && device.gatt.connected) device.gatt.disconnect();
+  setStatus('已断开', false);
+  document.getElementById('btnConnect').disabled = false;
+  document.getElementById('btnDisconnect').disabled = true;
+};
+
+async function sendCmd(s) {
+  if (!rxChar) { appendLog('未连接，无法发送'); return; }
+  let enc = new TextEncoder();
+  await rxChar.writeValue(enc.encode(s));
+  appendLog('→ ' + s.replace(/\n/g, '\\n'));
+}
+
+document.getElementById('btnSend').onclick = () => {
+  const v = document.getElementById('cmdInput').value.trim();
+  if (v) sendCmd(v.endsWith('\n') ? v : v + '\n');
+};
+document.getElementById('cmdInput').addEventListener('keydown', e => {
+  if (e.key === 'Enter') document.getElementById('btnSend').click();
+});
+
+document.getElementById('btnMode0').onclick = () => sendCmd('MODE:0\n');
+document.getElementById('btnMode1').onclick = () => sendCmd('MODE:1\n');
+document.getElementById('btnMode2').onclick = () => sendCmd('MODE:2\n');
+document.getElementById('btnCancel').onclick = () => sendCmd('ALARM:CANCEL\n');
+</script>
+</body>
+</html>

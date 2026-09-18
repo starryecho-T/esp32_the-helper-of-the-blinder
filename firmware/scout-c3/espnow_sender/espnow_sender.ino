@@ -7,32 +7,37 @@
  *   3. 摄像头 Web Server（手机可直接访问 /capture 拍照）
  *
  * 接线：
- *   HC-SR04:  Trig→GPIO14, Echo→GPIO2, VCC→5V, GND→GND
+ *   HC-SR04:  Trig→GPIO1, Echo→GPIO14, VCC→5V, GND→GND
+ *     （GPIO9被摄像头Y3占用；GPIO2有板载LED下拉导致Echo读不到高电平，改用GPIO14）
  *   摄像头:   板载，不用接线
  *
- * 摄像头占用的引脚（不能用）：
+ * 摄像头占用的引脚（Freenove ESP32-S3 WROOM，不能用）：
  *   4,5,6,7,8,9,10,11,12,13,15,16,17,18
- *   超声波用 GPIO14(Trig) 和 GPIO2(Echo)，不冲突
+ *   超声波用 GPIO1(Trig) 和 GPIO14(Echo)，不冲突
  *
  * BLE 设备名：无（前哨不连蓝牙，走 ESP-NOW + WiFi）
  */
 
+// 摄像头型号：ESP32-S3-EYE（Freenove ESP32-S3 WROOM 用此型号，引脚与官方例程一致）
+#define CAMERA_MODEL_ESP32S3_EYE
+
 #include <esp_now.h>
+#include <esp_wifi.h>
 #include <WiFi.h>
 #include <esp_camera.h>
 #include "esp_http_server.h"
 #include "camera_pins.h"
 
 // ====================== 引脚 ======================
-#define TRIG_PIN 14
-#define ECHO_PIN 2
+#define TRIG_PIN 1     // GPIO1 空闲
+#define ECHO_PIN 14   // GPIO14 空闲（GPIO2有板载LED下拉，导致Echo读不到高电平）
 
 // ====================== 盲杖 MAC ======================
 uint8_t caneMac[] = {0x94, 0xA9, 0x90, 0xCA, 0xAE, 0x64};
 
 // ====================== WiFi ======================
-const char* ssid = "你的WiFi名";       // 改成你的 WiFi
-const char* password = "你的WiFi密码";  // 改成你的 WiFi 密码
+const char* ssid = "starry";       // 改成你的 WiFi
+const char* password = "iloveyouso";  // 改成你的 WiFi 密码
 
 // ====================== 数据结构 ======================
 // 前哨 → 盲杖：高位距离
@@ -51,14 +56,41 @@ CaneCmd recvCmd;
 
 // ====================== 超声波测距 ======================
 float readDistance() {
+  // 临时关中断，防止 ESP-NOW/WiFi 中断打断 pulseIn 导致超时读 0
+  noInterrupts();
   digitalWrite(TRIG_PIN, LOW);
   delayMicroseconds(2);
   digitalWrite(TRIG_PIN, HIGH);
   delayMicroseconds(10);
   digitalWrite(TRIG_PIN, LOW);
   long d = pulseIn(ECHO_PIN, HIGH, 30000);
+  interrupts();
   if (d == 0) return -1.0;
   return d * 0.0343 / 2.0;
+}
+
+// 超声波诊断：直接打印 Trig/Echo 电平和 pulseIn 原始值
+void diagnoseUltrasonic() {
+  Serial.println("\n---------- 超声波诊断 ----------");
+  Serial.printf("  Trig脚(GPIO%d) 静态电平: %d\n", TRIG_PIN, digitalRead(TRIG_PIN));
+  Serial.printf("  Echo脚(GPIO%d) 静态电平: %d\n", ECHO_PIN, digitalRead(ECHO_PIN));
+  Serial.println("  发送10us触发脉冲...");
+  digitalWrite(TRIG_PIN, LOW); delayMicroseconds(5);
+  digitalWrite(TRIG_PIN, HIGH); delayMicroseconds(15);
+  digitalWrite(TRIG_PIN, LOW);
+  long d = pulseIn(ECHO_PIN, HIGH, 50000);
+  Serial.printf("  pulseIn 原始值: %ld (0=超时没收到回波)\n", d);
+  if (d > 0) {
+    Serial.printf("  换算距离: %.1f cm\n", d * 0.0343 / 2.0);
+  } else {
+    Serial.println("  ❌ 没收到回波！检查：");
+    Serial.println("    1. VCC 是否接 5V（不是3.3V）");
+    Serial.println("    2. GND 是否接好");
+    Serial.println("    3. Trig/Echo 是否接反");
+    Serial.println("    4. 跳线帽是否已拔掉（GPIO模式）");
+    Serial.println("    5. 前方30cm-2m内是否有障碍物");
+  }
+  Serial.println("------------------------------");
 }
 
 int getLevel(float dist) {
@@ -231,44 +263,68 @@ void setup() {
   bool camOk = cameraInit();
   Serial.printf("  [摄像头]   %s\n", camOk ? "OK ✓" : "失败 ✗");
 
-  // WiFi 连接（给手机访问摄像头用）
-  WiFi.mode(WIFI_AP_STA);  // 同时开 AP 和 STA
+  // WiFi：连手机热点。ESP-NOW 信道必须和 WiFi 信道一致，所以连上后读实际信道。
+  WiFi.mode(WIFI_AP_STA);
   WiFi.begin(ssid, password);
-  Serial.print("  [WiFi]     连接中");
+  Serial.print("  [WiFi]     连接热点中");
   int wifiTimeout = 0;
   while (WiFi.status() != WL_CONNECTED && wifiTimeout < 20) {
-    delay(500);
-    Serial.print(".");
-    wifiTimeout++;
+    delay(500); Serial.print("."); wifiTimeout++;
   }
   if (WiFi.status() == WL_CONNECTED) {
     Serial.printf("\n  [WiFi]     OK ✓  IP: %s\n", WiFi.localIP().toString().c_str());
-    startCameraServer();  // 启动拍照 Web 服务器
-    Serial.println("  [HTTP]     /capture(拍照) /stream(实时) 就绪");
   } else {
-    Serial.println("\n  [WiFi]     失败 ✗  仅 ESP-NOW 模式");
+    Serial.println("\n  [WiFi]     失败 ✗  ESP-NOW 将用默认信道");
   }
+  Serial.print("     本机 MAC: "); Serial.println(WiFi.macAddress());
+  Serial.print("     对端(盲杖) MAC: ");
+  for (int i = 0; i < 6; i++) { if (caneMac[i] < 0x10) Serial.print("0"); Serial.print(caneMac[i], HEX); if (i < 5) Serial.print(":"); }
+  Serial.println();
 
-  // ESP-NOW（和盲杖通信）
+  // 读取 WiFi 实际信道，ESP-NOW 必须用同一信道，否则 peer channel 报错
+  uint8_t primaryChan = 1;
+  wifi_second_chan_t secChan = WIFI_SECOND_CHAN_NONE;
+  esp_wifi_get_channel(&primaryChan, &secChan);
+  Serial.printf("  [信道]     WiFi 实际信道=%d，ESP-NOW 将用此信道\n", primaryChan);
+
+  // 启动 HTTP 服务器（手机访问 http://<前哨IP>/capture 拉照片）
+  startCameraServer();
+  Serial.println("  [HTTP]     /capture(拍照) /stream(实时) 就绪");
+
+  // ESP-NOW（和盲杖通信）。用 WiFi 实际信道，与盲杖对齐
   if (esp_now_init() == ESP_OK) {
     esp_now_register_recv_cb(OnDataRecv);
     esp_now_peer_info_t peer;
     memset(&peer, 0, sizeof(peer));
     memcpy(peer.peer_addr, caneMac, 6);
+    peer.channel = primaryChan;   // 用实际信道，不写死
     peer.encrypt = false;
     esp_now_add_peer(&peer);
-    Serial.println("  [ESP-NOW]  就绪 ✓");
+    Serial.printf("  [ESP-NOW]  就绪 ✓ (信道%d)\n", primaryChan);
   } else {
     Serial.println("  [ESP-NOW]  失败 ✗");
   }
 
-  Serial.printf("  [MAC]      %s\n", WiFi.macAddress().c_str());
   Serial.println("==============================================");
-  Serial.println("初始化完成。手机访问 http://<上面IP>/capture 拍照");
+  Serial.println("初始化完成。手机访问 http://" + WiFi.localIP().toString() + "/capture 拍照");
+  Serial.println("串口输入 'dist' 可诊断超声波");
+}
+
+// ====================== 串口命令 ======================
+void handleSerial() {
+  if (!Serial.available()) return;
+  String cmd = Serial.readStringUntil('\n');
+  cmd.trim();
+  if (cmd == "dist") {
+    diagnoseUltrasonic();
+  } else if (cmd == "help") {
+    Serial.println("命令: dist(超声波诊断)");
+  }
 }
 
 // ====================== 主循环 ======================
 void loop() {
+  handleSerial();
   // 每 500ms 测高位距离，ESP-NOW 发给盲杖
   static unsigned long lastSend = 0;
   static int lastLevel = -1;
