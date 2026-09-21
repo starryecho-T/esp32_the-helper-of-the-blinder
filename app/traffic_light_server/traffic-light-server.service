@@ -1,0 +1,33 @@
+# Smart Cane Traffic Light Detector - systemd service
+# 安装方法:
+#   1. 把项目放到 /opt/traffic_light_server (含 server.py, requirements.txt, yolov8n.pt)
+#   2. 在该目录建虚拟环境: python3 -m venv venv && venv/bin/pip install -r requirements.txt
+#   3. 复制本文件: sudo cp traffic-light-server.service /etc/systemd/system/
+#   4. sudo systemctl daemon-reload
+#   5. sudo systemctl enable --now traffic-light-server
+# 查看日志: journalctl -u traffic-light-server -f
+
+[Unit]
+Description=Smart Cane Traffic Light Detector (FastAPI + YOLOv8)
+After=network.target
+
+[Service]
+Type=simple
+# 如果你的登录用户不是 ubuntu，请改成实际用户名
+User=ubuntu
+WorkingDirectory=/opt/traffic_light_server
+# 所有配置都走环境变量，改这里即可，不用动代码
+Environment="YOLO_MODEL=/opt/traffic_light_server/yolov8n.pt"
+Environment="FRAME_PATH=/opt/traffic_light_server/latest.jpg"
+Environment="FRAME_MAX_AGE=20"
+# 强烈建议设置一个随机 token，ESP32 上传时要带上，防止别人乱推图片
+Environment="DEVICE_TOKEN=change_me_to_a_random_string"
+# 只有当服务器能直接访问摄像头时才配（云上部署留空）
+Environment="CAMERA_URL="
+# 必须单进程：最新一帧缓存在内存里，多 worker 会各存一份
+ExecStart=/opt/traffic_light_server/venv/bin/uvicorn server:app --host 0.0.0.0 --port 8000 --workers 1
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

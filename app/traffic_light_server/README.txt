@@ -41,3 +41,32 @@ App 端（新版 .aia）里「摄像头识别」按钮自动调用：
 网络要求（重要）：
 服务器必须能直接访问 ESP32-CAM 的 IP（默认 http://192.168.43.248/capture，
 即手机、ESP32-CAM、服务器需在同一局域网/同一手机热点下），三者互通方案才成立。
+
+=========================================================
+云服务器部署（阿里云 ECS）：改用「设备主动推送」模式
+=========================================================
+云服务器在公网，ESP32-CAM 在内网，服务器拉不到摄像头。因此主流程改为：
+
+  ESP32-CAM --POST /upload--> 云服务器（缓存最新一帧） <--GET /detect-- 手机 App
+
+【POST /upload?token=<token>】ESP32-CAM 主动上传一帧
+  输入：HTTP POST 原始 JPEG 二进制（body）
+  鉴权：环境变量 DEVICE_TOKEN 非空时，必须带 ?token=xxx 或 X-Device-Token 头
+  输出：OK
+  固件示例见 firmware/scout-c3/cloud_upload/cloud_upload.ino
+
+【GET /detect】无 cam 参数时用设备推送上来的最新一帧做识别
+  帧超过 FRAME_MAX_AGE（默认 20 秒）没更新 → 返回 HTTP 503
+  仍传 ?cam=<url> 则走老的直连拉取模式（服务器与摄像头同网时可用）
+
+【GET /status】调试用，查看最新帧字节数和年龄，例如 "OK frame bytes=24513 age=0.8s"
+
+环境变量（见 traffic-light-server.service）：
+  YOLO_MODEL       模型路径，默认 yolov8n.pt
+  CAMERA_URL       能直连摄像头时才配；云上部署留空
+  DEVICE_TOKEN     上传鉴权 token，建议设为随机字符串
+  FRAME_MAX_AGE    缓存帧最长可用时间（秒），默认 20
+  FRAME_PATH       缓存帧落盘路径，默认 latest.jpg
+  CAMERA_TIMEOUT   直连拉取超时（秒），默认 5
+
+注意：uvicorn 必须 --workers 1，最新一帧缓存在内存里，多进程会各存一份。

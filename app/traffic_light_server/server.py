@@ -1,20 +1,65 @@
-from fastapi import FastAPI, Request, HTTPException
+from fastapi import FastAPI, Request, HTTPException, Header
 from fastapi.responses import PlainTextResponse
 from ultralytics import YOLO
 import cv2
 import numpy as np
 import requests
+import os
+import threading
+import time
 
 app = FastAPI(title='Smart Cane Traffic Light Detector')
 
 # COCO-trained YOLO model. It detects the object "traffic light".
 # The color is classified from the detected traffic-light crop.
-model = YOLO('yolov8n.pt')
+MODEL_PATH = os.environ.get('YOLO_MODEL', 'yolov8n.pt')
+model = YOLO(MODEL_PATH)
 TRAFFIC_LIGHT_CLASS = 9  # COCO: traffic light
 
-# Head-mounted ESP32-CAM snapshot URL. Override with ?cam=<url>.
-CAMERA_DEFAULT_URL = 'http://10.155.212.227/capture'
-CAMERA_TIMEOUT = 5  # seconds
+# ---------------------------------------------------------------------------
+# 帧获取方式
+#
+# 部署到云服务器后，ESP32-CAM 在家/校园内网里，服务器无法反向访问它。
+# 因此主流程改为「设备主动推送」：
+#   ESP32-CAM --POST /upload--> 云服务器（缓存最新一帧） <--GET /detect-- 手机 App
+# 只有当 cam 参数被显式传入（服务器与摄像头同网时）才走老的拉取模式。
+# ---------------------------------------------------------------------------
+CAMERA_DEFAULT_URL = os.environ.get('CAMERA_URL', '')   # 可选：能直连时才配
+CAMERA_TIMEOUT = float(os.environ.get('CAMERA_TIMEOUT', '5'))  # seconds
+
+# 设备上传鉴权：设置后，/upload 必须带 ?token=xxx 或 X-Device-Token 头
+DEVICE_TOKEN = os.environ.get('DEVICE_TOKEN', '')
+# 缓存帧最长可用时间（秒）。超过则认为设备离线/断流
+FRAME_MAX_AGE = float(os.environ.get('FRAME_MAX_AGE', '20'))
+# 缓存帧落盘路径，便于调试查看（重启后仍保留最后一帧）
+FRAME_PATH = os.environ.get('FRAME_PATH', 'latest.jpg')
+
+_frame_lock = threading.Lock()
+_latest_frame = {'data': b'', 'ts': 0.0}
+
+
+def remember_frame(data: bytes) -> None:
+    """保存设备上传的最新一帧（内存缓存 + 落盘）。"""
+    with _frame_lock:
+        _latest_frame['data'] = data
+        _latest_frame['ts'] = time.time()
+    try:
+        with open(FRAME_PATH, 'wb') as fh:
+            fh.write(data)
+    except Exception:
+        pass  # 落盘失败不影响主流程
+
+
+def cached_frame(max_age: float = FRAME_MAX_AGE):
+    """返回 (bytes, age)；帧过旧或不存在时返回 (None, age|None)。"""
+    with _frame_lock:
+        data, ts = _latest_frame['data'], _latest_frame['ts']
+    if not data or ts <= 0:
+        return None, None
+    age = time.time() - ts
+    if age > max_age:
+        return None, age
+    return data, age
 
 
 def color_score(crop: np.ndarray):
@@ -60,12 +105,18 @@ def detect_from_bytes(data: bytes) -> str:
         boxes = result.boxes
         if boxes is None:
             continue
-        for box in boxes:
-            cls = int(box.cls[0].item())
-            if cls != TRAFFIC_LIGHT_CLASS:
+        # 直接取整个数组再逐行处理，避免不同 ultralytics 版本里 Box 对象的维度差异
+        if len(boxes) == 0:
+            continue
+        xyxy = boxes.xyxy.cpu().numpy()   # (n, 4)
+        confs = boxes.conf.cpu().numpy()  # (n,)
+        clss = boxes.cls.cpu().numpy()    # (n,)
+
+        for i in range(len(xyxy)):
+            if int(clss[i]) != TRAFFIC_LIGHT_CLASS:
                 continue
-            det_conf = float(box.conf[0].item())
-            x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())
+            det_conf = float(confs[i])
+            x1, y1, x2, y2 = map(int, xyxy[i].tolist())
             x1, y1 = max(0, x1), max(0, y1)
             x2, y2 = min(image.shape[1], x2), min(image.shape[0], y2)
             crop = image[y1:y2, x1:x2]
@@ -89,20 +140,69 @@ def health():
     return 'OK'
 
 
+@app.get('/status', response_class=PlainTextResponse)
+def status():
+    """调试用：查看设备是否还在推送帧、最新帧有多旧。"""
+    data, age = cached_frame()
+    if data is None:
+        state = f'no-frame age={age if age else "n/a"}'
+    else:
+        state = f'frame bytes={len(data)} age={age:.1f}s'
+    return f'OK {state} model={MODEL_PATH}'
+
+
+@app.post('/upload', response_class=PlainTextResponse)
+async def upload(request: Request, token: str = '',
+                 x_device_token: str = Header(default='')):
+    """ESP32-CAM 主动上传一帧 JPEG：POST /upload?token=<token>，body 为图片二进制。
+
+    只要设备能上网（不需要公网 IP、不需要端口映射）就能把画面送到云端；
+    服务器只保存最新一帧，随后由 GET /detect 消费。
+    """
+    if DEVICE_TOKEN and token != DEVICE_TOKEN and x_device_token != DEVICE_TOKEN:
+        raise HTTPException(status_code=401, detail='bad token')
+
+    data = await request.body()
+    if not data:
+        raise HTTPException(status_code=400, detail='empty image')
+
+    remember_frame(data)
+    return 'OK'
+
+
 @app.get('/detect', response_class=PlainTextResponse)
-def detect_from_camera(cam: str = CAMERA_DEFAULT_URL):
-    """GET /detect?cam=<snapshot-url>: server pulls the image from the
-    ESP32-CAM by itself, so the app never has to upload a file."""
-    try:
-        r = requests.get(cam, timeout=CAMERA_TIMEOUT)
-        r.raise_for_status()
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail=f'camera unreachable: {exc}')
-    return detect_from_bytes(r.content)
+def detect_from_camera(cam: str = ''):
+    """GET /detect
+
+    默认使用 ESP32-CAM 推送上来的最新一帧；
+    若显式传 ?cam=<snapshot-url> 且服务器能直连该地址，则临时去拉一张。
+    """
+    if cam:
+        try:
+            r = requests.get(cam, timeout=CAMERA_TIMEOUT)
+            r.raise_for_status()
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f'camera unreachable: {exc}')
+        return detect_from_bytes(r.content)
+
+    data, age = cached_frame()
+    if data is None:
+        if CAMERA_DEFAULT_URL:
+            try:
+                r = requests.get(CAMERA_DEFAULT_URL, timeout=CAMERA_TIMEOUT)
+                r.raise_for_status()
+                return detect_from_bytes(r.content)
+            except Exception as exc:
+                raise HTTPException(status_code=502, detail=f'camera unreachable: {exc}')
+        raise HTTPException(
+            status_code=503,
+            detail=f'no fresh frame from device (age={age if age else "n/a"})')
+
+    return detect_from_bytes(data)
 
 
 @app.post('/detect', response_class=PlainTextResponse)
 async def detect(request: Request):
+    """手机直接上传图片做识别（不经过摄像头缓存）。"""
     data = await request.body()
     return detect_from_bytes(data)
-
