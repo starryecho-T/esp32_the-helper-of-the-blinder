@@ -27,7 +27,7 @@ const char* WIFI_PASS   = "iloveyouso";
 
 // 云服务器地址（把 8.130.xxx.xxx 换成你的阿里云 ECS 公网 IP 或域名）
 const char* SERVER_HOST = "http://39.106.216.80:8000";
-const char* DEVICE_TOKEN = "ieTfVG2SMjgvYNxO9C18bh6d"; // 与服务器 DEVICE_TOKEN 一致
+const char* DEVICE_TOKEN = "YFOpzRWJxw6G2dl4jkNUMX7h"; // 与服务器 DEVICE_TOKEN 一致
 
 const unsigned long UPLOAD_INTERVAL_MS = 700;  // 上传间隔，700ms ≈ 1.4 帧/秒
 // ============================================================

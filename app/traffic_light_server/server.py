@@ -1,5 +1,5 @@
 from fastapi import FastAPI, Request, HTTPException, Header
-from fastapi.responses import PlainTextResponse
+from fastapi.responses import PlainTextResponse, Response
 from ultralytics import YOLO
 import cv2
 import numpy as np
@@ -29,6 +29,8 @@ CAMERA_TIMEOUT = float(os.environ.get('CAMERA_TIMEOUT', '5'))  # seconds
 
 # 设备上传鉴权：设置后，/upload 必须带 ?token=xxx 或 X-Device-Token 头
 DEVICE_TOKEN = os.environ.get('DEVICE_TOKEN', '')
+# 家属端查看画面的鉴权：留空则任何人都能看，建议设一个（与 DEVICE_TOKEN 不同）
+VIEW_TOKEN = os.environ.get('VIEW_TOKEN', '')
 # 缓存帧最长可用时间（秒）。超过则认为设备离线/断流
 FRAME_MAX_AGE = float(os.environ.get('FRAME_MAX_AGE', '20'))
 # 缓存帧落盘路径，便于调试查看（重启后仍保留最后一帧）
@@ -206,3 +208,32 @@ async def detect(request: Request):
     """手机直接上传图片做识别（不经过摄像头缓存）。"""
     data = await request.body()
     return detect_from_bytes(data)
+
+
+@app.get('/snapshot')
+def snapshot(t: str = '', token: str = ''):
+    """返回设备上传的最新一帧 JPEG，供家属端 App 直接当图片显示。
+
+    用法：Image 组件的 Picture 填
+        http://<服务器>/snapshot?t=<毫秒时间戳>
+    带上变化的 t 参数是为了绕开 App Inventor / 系统的图片缓存。
+    VIEW_TOKEN 非空时还需要 ?token=xxx。
+    """
+    if VIEW_TOKEN and token != VIEW_TOKEN:
+        raise HTTPException(status_code=401, detail='bad token')
+
+    data, age = cached_frame()
+    if data is None:
+        raise HTTPException(status_code=503, detail=f'no fresh frame (age={age})')
+
+    return Response(
+        content=data,
+        media_type='image/jpeg',
+        headers={'Cache-Control': 'no-store'},
+    )
+
+
+@app.get('/latest.jpg')
+def latest_jpg(token: str = ''):
+    """/snapshot 的别名，方便直接在浏览器里打开查看。"""
+    return snapshot(token=token)

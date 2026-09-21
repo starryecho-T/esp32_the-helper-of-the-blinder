@@ -56,12 +56,14 @@ Write-Step "3/6 模型文件 yolov8n.pt 已就位"
 Write-Step "4/6 写入环境变量并生成 DEVICE_TOKEN"
 $chars = 48..57 + 65..90 + 97..122
 $token = -join ($chars | Get-Random -Count 24 | ForEach-Object { [char]$_ })
+$viewToken = -join ($chars | Get-Random -Count 16 | ForEach-Object { [char]$_ })
 $envVars = @{
     YOLO_MODEL    = Join-Path $AppDir "yolov8n.pt"
     FRAME_PATH    = Join-Path $AppDir "latest.jpg"
     FRAME_MAX_AGE = "20"
     CAMERA_URL    = ""
     DEVICE_TOKEN  = $token
+    VIEW_TOKEN    = $viewToken
 }
 foreach ($k in $envVars.Keys) {
     [Environment]::SetEnvironmentVariable($k, $envVars[$k], "Machine")
@@ -69,6 +71,8 @@ foreach ($k in $envVars.Keys) {
 }
 Write-Host "  DEVICE_TOKEN = $token" -ForegroundColor Green
 Write-Host "  这个 token 要填进 ESP32 固件的 DEVICE_TOKEN" -ForegroundColor Yellow
+Write-Host "  VIEW_TOKEN   = $viewToken" -ForegroundColor Green
+Write-Host "  家属端看画面时用的口令：/snapshot?token=$viewToken" -ForegroundColor Yellow
 
 Write-Step "5/6 配置开机自启并启动"
 $uvicornArgs = "-m uvicorn server:app --host 0.0.0.0 --port $Port --workers 1"
