@@ -62,7 +62,21 @@
     }
     // 默认中心：北京（原代码误留东京坐标，已修正；收到定位后自动跳转到实际位置）
     map = new AMap.Map('mapContainer', { zoom: 15, center: [116.4074, 39.9042] });
-    marker = new AMap.Marker({ position: [116.4074, 39.9042], title: '家人当前位置' });
+    // 自定义内嵌 SVG 图标：AMap 默认针形图标需从 webapi.amap.com 加载图片，
+    // 在 APK WebView 的 file:// 环境下会因跨域限制加载失败（PC 浏览器正常），
+    // 故改用纯 DOM 的 SVG content，零网络依赖。
+    var iconHtml = '' +
+      '<div style="width:36px;height:46px;filter:drop-shadow(0 2px 3px rgba(0,0,0,.45));">' +
+      '<svg viewBox="0 0 36 46" width="36" height="46" xmlns="http://www.w3.org/2000/svg">' +
+      '<path d="M18 1 C8.9 1 1.5 8.4 1.5 17.5 C1.5 29.6 18 45 18 45 C18 45 34.5 29.6 34.5 17.5 C34.5 8.4 27.1 1 18 1 Z" fill="#1a66ff" stroke="#ffffff" stroke-width="2"/>' +
+      '<circle cx="18" cy="17.5" r="6" fill="#ffffff"/>' +
+      '</svg></div>';
+    marker = new AMap.Marker({
+      position: [116.4074, 39.9042],
+      title: '家人当前位置',
+      content: iconHtml,
+      anchor: 'bottom-center'   // 针尖对准坐标点
+    });
     marker.setMap(map);
   }
 
