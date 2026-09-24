@@ -10,6 +10,20 @@ import time
 
 app = FastAPI(title='Smart Cane Traffic Light Detector')
 
+# ---------------------------------------------------------------------------
+# CORS：手机 App（WebView / 浏览器）通过 fetch 调用 /detect、/snapshot，
+# 没有下面这段会被浏览器跨域策略拦截（App Inventor 原生 HTTP 不受影响）。
+# ---------------------------------------------------------------------------
+from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=['*'],        # 演示环境放开；生产建议改成具体域名
+    allow_methods=['*'],
+    allow_headers=['*'],
+)
+
+
 # COCO-trained YOLO model. It detects the object "traffic light".
 # The color is classified from the detected traffic-light crop.
 MODEL_PATH = os.environ.get('YOLO_MODEL', 'yolov8n.pt')
@@ -32,7 +46,8 @@ DEVICE_TOKEN = os.environ.get('DEVICE_TOKEN', '')
 # 家属端查看画面的鉴权：留空则任何人都能看，建议设一个（与 DEVICE_TOKEN 不同）
 VIEW_TOKEN = os.environ.get('VIEW_TOKEN', '')
 # 缓存帧最长可用时间（秒）。超过则认为设备离线/断流
-FRAME_MAX_AGE = float(os.environ.get('FRAME_MAX_AGE', '20'))
+# 必须 > 前哨推流间隔（当前固件 30 秒），否则 /detect、/snapshot 会在帧过期窗口报错
+FRAME_MAX_AGE = float(os.environ.get('FRAME_MAX_AGE', '45'))
 # 缓存帧落盘路径，便于调试查看（重启后仍保留最后一帧）
 FRAME_PATH = os.environ.get('FRAME_PATH', 'latest.jpg')
 
