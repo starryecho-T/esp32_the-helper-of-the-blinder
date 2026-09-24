@@ -1,0 +1,4 @@
+// 盲人端 APK（智慧盲杖）：WebView 壳 + 原生 BLE 桥
+plugins {
+    id 'com.android.application' version '8.5.2' apply false
+}

@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="theme-color" content="#1a6fe0">
+  <title>智能盲杖 · 盲人端</title>
+  <link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+  <header class="app-header">
+    <h1>智能盲杖<span class="sub">盲人端 · 盲杖安全辅助</span></h1>
+    <a class="back-link" href="index.html">← 返回</a>
+  </header>
+
+  <main class="page">
+    <!-- ===== 设备连接 ===== -->
+    <section class="card" aria-label="设备连接">
+      <h2>设备连接</h2>
+      <div class="row">
+        <span class="label">连接状态</span>
+        <span class="value muted" id="bleState" aria-live="polite">未连接</span>
+      </div>
+      <div class="row">
+        <span class="label">当前设备</span>
+        <span class="value muted" id="bleDevice">未选择</span>
+      </div>
+      <button class="btn btn-solid" id="btnConnect">连接盲杖</button>
+      <button class="btn btn-danger" id="btnDisconnect" disabled>断开连接</button>
+    </section>
+
+    <!-- ===== 实时状态 ===== -->
+    <section class="card" aria-label="盲杖状态">
+      <h2>盲杖状态</h2>
+      <div class="row">
+        <span class="label">工作模式</span>
+        <span class="value muted" id="caneMode">--</span>
+      </div>
+      <div class="row">
+        <span class="label">电池电量</span>
+        <span class="value muted" id="caneBatt">--%</span>
+      </div>
+      <div class="row">
+        <span class="label">报警状态</span>
+        <span class="value muted" id="caneAlarm">--</span>
+      </div>
+      <div class="row">
+        <span class="label">障碍物</span>
+        <span class="value muted" id="caneObstacle">--</span>
+      </div>
+      <div class="row">
+        <span class="label">低位 / 高位距离</span>
+        <span class="value muted" id="caneDist">-- / --</span>
+      </div>
+    </section>
+
+    <!-- ===== 模式切换 ===== -->
+    <section class="card" aria-label="模式切换">
+      <h2>模式切换</h2>
+      <div class="btn-grid">
+        <button class="btn" id="btnMode0" disabled>日常模式</button>
+        <button class="btn" id="btnMode2" disabled>夜间模式</button>
+      </div>
+      <button class="btn" id="btnMode1" disabled>安静模式</button>
+    </section>
+
+    <!-- ===== 交通灯识别 ===== -->
+    <section class="card" aria-label="交通灯识别">
+      <h2>交通灯识别</h2>
+      <div class="light-box" id="lightBox">
+        <div class="light-color" id="lightColor" aria-live="assertive">等待图片</div>
+        <div class="light-conf" id="lightConf">置信度：--</div>
+      </div>
+      <button class="btn" id="btnCapture" disabled>手动识别一次</button>
+    </section>
+
+    <!-- ===== 位置与上传 ===== -->
+    <section class="card" aria-label="位置上报">
+      <h2>位置上报</h2>
+      <div class="row">
+        <span class="label">纬度</span>
+        <span class="value muted" id="geoLat">--</span>
+      </div>
+      <div class="row">
+        <span class="label">经度</span>
+        <span class="value muted" id="geoLng">--</span>
+      </div>
+      <div class="row">
+        <span class="label">SOS 上报</span>
+        <span class="value muted" id="sosState">正常</span>
+      </div>
+      <button class="btn btn-danger" id="btnAlarmCancel" disabled>远程取消报警</button>
+    </section>
+
+    <!-- ===== 调试日志 ===== -->
+    <details class="card">
+      <summary style="font-size:18px;font-weight:700">调试日志</summary>
+      <div class="log" id="logView" aria-label="调试日志"></div>
+    </details>
+  </main>
+
+  <div class="toast-area" id="toastArea" aria-live="polite"></div>
+
+  <!-- 依赖：core → services → 页面控制器（顺序加载，无需构建工具） -->
+  <script src="js/core/config.js"></script>
+  <script src="js/core/bus.js"></script>
+  <script src="js/core/store.js"></script>
+  <script src="js/core/protocol.js"></script>
+  <script src="js/services/ble.js"></script>
+  <script src="js/services/firebase.js"></script>
+  <script src="js/services/trafficlight.js"></script>
+  <script src="js/services/geo.js"></script>
+  <script src="js/services/tts.js"></script>
+  <script src="js/blind/app.js"></script>
+</body>
+</html>

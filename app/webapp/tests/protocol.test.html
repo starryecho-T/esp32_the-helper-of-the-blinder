@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <title>protocol.js 单元测试 — 智能盲杖 WebApp</title>
+  <style>
+    body { font-family: Consolas, monospace; background: #10162a; color: #cfe3ff; padding: 20px; font-size: 14px; }
+    h1 { font-size: 18px; }
+    .pass { color: #7dff9b; }
+    .fail { color: #ff7d7d; font-weight: bold; }
+    .case { margin: 6px 0; padding: 6px 10px; background: #182036; border-radius: 6px; }
+    pre { white-space: pre-wrap; }
+    #summary { font-size: 16px; margin-top: 12px; }
+  </style>
+</head>
+<body>
+  <h1>protocol.js 协议解析单元测试（双击本页即可运行）</h1>
+  <div id="results"></div>
+  <div id="summary"></div>
+
+  <script src="../js/core/protocol.js"></script>
+  <script>
+    (function () {
+      var P = SmartCane.protocol;
+      var pass = 0, fail = 0;
+      var box = document.getElementById('results');
+
+      function eq(name, actual, expected) {
+        var ok = JSON.stringify(actual) === JSON.stringify(expected);
+        if (ok) pass++; else fail++;
+        var div = document.createElement('div');
+        div.className = 'case ' + (ok ? 'pass' : 'fail');
+        div.textContent = (ok ? '✓ ' : '✗ ') + name +
+          (ok ? '' : '\n  期望: ' + JSON.stringify(expected) + '\n  实际: ' + JSON.stringify(actual));
+        box.appendChild(div);
+      }
+
+      // ===== 周期状态包解析（含扩展字段）=====
+      var s1 = P.parseLine('DIST:85,HIGH:120,TYPE:LARGE,LEVEL:1,MODE:0,BATT:85,ALARM:NORMAL,FALLST:0,ENC:42,ACC:1.02,MPU:1,LAT:30.123456,LNG:120.654321,LIGHT:无');
+      eq('状态包 kind', s1.kind, P.KIND.STATUS);
+      eq('状态包 DIST', s1.status.dist, 85);
+      eq('状态包 HIGH', s1.status.high, 120);
+      eq('状态包 TYPE', s1.status.type, 'LARGE');
+      eq('状态包 LEVEL', s1.status.level, 1);
+      eq('状态包 MODE:0 → NORMAL', s1.status.mode, 'NORMAL');
+      eq('状态包 BATT', s1.status.batt, 85);
+      eq('状态包 ALARM', s1.status.alarm, 'NORMAL');
+      eq('状态包 LAT', s1.status.lat, 30.123456);
+      eq('状态包 LNG', s1.status.lng, 120.654321);
+
+      var s2 = P.parseLine('DIST:-1,HIGH:-1,TYPE:SAFE,LEVEL:0,MODE:2,BATT:20,ALARM:NORMAL');
+      eq('MODE:2 → NIGHT', s2.status.mode, 'NIGHT');
+      eq('DIST:-1 保留', s2.status.dist, -1);
+      eq('缺失 LAT → null', s2.status.lat, null);
+
+      // ===== 事件消息 =====
+      eq('事件 MODE:NORMAL', P.parseLine('MODE:NORMAL').event.type, P.EVENT_TYPE.MODE_SWITCH);
+      eq('事件 MODE:NORMAL mode', P.parseLine('MODE:NORMAL').event.mode, 'NORMAL');
+      eq('事件 MODE:SILENT', P.parseLine('MODE:SILENT').event.mode, 'SILENT');
+      eq('事件 MODE:NIGHT', P.parseLine('MODE:NIGHT').event.mode, 'NIGHT');
+      eq('事件 CAMERA:CAPTURE', P.parseLine('CAMERA:CAPTURE').event.type, P.EVENT_TYPE.CAMERA_CAPTURE);
+      eq('事件 ALARM:MANUAL', P.parseLine('ALARM:MANUAL').event.type, P.EVENT_TYPE.ALARM_MANUAL);
+      eq('事件 ALARM:CANCEL', P.parseLine('ALARM:CANCEL').event.type, P.EVENT_TYPE.ALARM_CANCEL);
+      eq('事件 FALL:1', P.parseLine('FALL:1').event.type, P.EVENT_TYPE.FALL_DETECTED);
+      eq('事件 FALL:CANCELLED', P.parseLine('FALL:CANCELLED').event.type, P.EVENT_TYPE.FALL_CANCELLED);
+      eq('事件 FALL:CONFIRMED', P.parseLine('FALL:CONFIRMED').event.type, P.EVENT_TYPE.FALL_CONFIRMED);
+
+      // ===== 注意：MODE:0 是状态包片段，不会误判为事件（事件只匹配名称）=====
+      var m0 = P.parseLine('MODE:0');
+      eq('MODE:0 按 status 解析', m0.kind, P.KIND.STATUS);
+
+      // ===== 未知消息 =====
+      eq('未知消息', P.parseLine('HELLO').kind, P.KIND.UNKNOWN);
+      eq('空消息', P.parseLine('   ').kind, P.KIND.UNKNOWN);
+
+      // ===== 按行拆分（含粘包/半包）=====
+      var r1 = P.splitLines('', 'DIST:85,HIGH:120\r\nTYPE:');
+      eq('拆分行数', r1.lines.length, 1);
+      eq('拆分首行', r1.lines[0], 'DIST:85,HIGH:120');
+      eq('残包保留', r1.rest, 'TYPE:');
+      var r2 = P.splitLines(r1.rest, 'LARGE,MODE:0\n');
+      eq('残包拼接后解析', P.parseLine(r2.lines[0]).status.type, 'LARGE');
+
+      // ===== 指令构造 =====
+      eq('指令 MODE:0(数字)', P.cmdSetMode(0), 'MODE:0');
+      eq('指令 MODE 名称', P.cmdSetMode('SILENT'), 'MODE:1');
+      eq('指令 ALARM:CANCEL', P.cmdAlarmCancel(), 'ALARM:CANCEL');
+      eq('指令 CAMERA:CAPTURE', P.cmdCameraCapture(), 'CAMERA:CAPTURE');
+      eq('指令 灯色回传', P.cmdLightResult('GREEN'), 'GREEN');
+      eq('指令 STATUS', P.cmdQueryStatus(), 'STATUS');
+
+      // ===== 识别响应解析（trafficlight.js 未在本页加载，此处仅测 protocol 模块）=====
+      eq('协议模块导出完整', typeof P.parseLine === 'function' &&
+        typeof P.splitLines === 'function' &&
+        typeof P.cmdSetMode === 'function', true);
+
+      document.getElementById('summary').innerHTML =
+        '<span class="' + (fail ? 'fail' : 'pass') + '">' +
+        (fail === 0 ? '全部通过 ✅' : '存在失败 ❌') +
+        '　通过 ' + pass + ' / ' + (pass + fail) + '</span>';
+    })();
+  </script>
+</body>
+</html>

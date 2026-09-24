@@ -1,0 +1,207 @@
+/* =============================================================
+   app.css — 智能盲杖 WebApp 设计系统
+   设计原则（无障碍优先，服务视障用户）：
+   1. 超大字体（基础 18px，关键信息 22~34px）
+   2. 高对比度配色（WCAG AA+）
+   3. 大触控目标（按钮最小 64px 高）
+   ============================================================= */
+
+:root {
+  --c-bg: #f5f6fa;
+  --c-card: #ffffff;
+  --c-text: #1a1a2e;
+  --c-text-sub: #4a4a68;
+  --c-primary: #1a6fe0;
+  --c-primary-dark: #0d4fa8;
+  --c-success: #0e8a3e;
+  --c-warning: #b7791f;
+  --c-danger: #cf3030;
+  --c-border: #d8dbe6;
+  --radius: 14px;
+  --shadow: 0 2px 10px rgba(26, 26, 46, .08);
+}
+
+* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+
+html, body {
+  margin: 0; padding: 0;
+  background: var(--c-bg);
+  color: var(--c-text);
+  font-family: -apple-system, "PingFang SC", "Microsoft YaHei", "Noto Sans SC", sans-serif;
+  font-size: 18px;
+  line-height: 1.6;
+}
+
+/* ---------- 顶部导航 ---------- */
+.app-header {
+  background: var(--c-primary);
+  color: #fff;
+  padding: 14px 16px;
+  display: flex; align-items: center; justify-content: space-between;
+  position: sticky; top: 0; z-index: 10;
+}
+.app-header h1 { margin: 0; font-size: 22px; font-weight: 700; }
+.app-header .sub { font-size: 14px; opacity: .85; display: block; font-weight: 400; }
+.back-link {
+  color: #fff; text-decoration: none; font-size: 16px;
+  border: 2px solid rgba(255,255,255,.6); border-radius: 10px;
+  padding: 6px 12px; white-space: nowrap;
+}
+
+/* ---------- 主体容器 ---------- */
+.page { max-width: 640px; margin: 0 auto; padding: 16px 14px 90px; }
+
+/* ---------- 卡片分区 ---------- */
+.card {
+  background: var(--c-card);
+  border: 2px solid var(--c-border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 16px;
+  margin-bottom: 16px;
+}
+.card h2 {
+  margin: 0 0 12px;
+  font-size: 20px;
+  border-left: 6px solid var(--c-primary);
+  padding-left: 10px;
+}
+
+/* ---------- 状态行 ---------- */
+.row {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 10px; padding: 10px 4px;
+  border-bottom: 1px dashed var(--c-border);
+  min-height: 52px;
+}
+.row:last-child { border-bottom: none; }
+.row .label { color: var(--c-text-sub); font-size: 17px; flex-shrink: 0; }
+.row .value { font-size: 22px; font-weight: 700; text-align: right; word-break: break-all; }
+.value.ok     { color: var(--c-success); }
+.value.warn   { color: var(--c-warning); }
+.value.danger { color: var(--c-danger); }
+.value.muted  { color: var(--c-text-sub); font-weight: 400; }
+
+/* ---------- 大按钮 ---------- */
+.btn {
+  display: block; width: 100%;
+  min-height: 64px;
+  font-size: 20px; font-weight: 700;
+  color: var(--c-primary-dark);
+  background: #e8f1ff;
+  border: 3px solid var(--c-primary);
+  border-radius: var(--radius);
+  padding: 12px 16px;
+  margin: 10px 0;
+  cursor: pointer;
+  transition: transform .05s ease, background .15s ease;
+}
+.btn:active { transform: scale(.98); background: #d3e5ff; }
+.btn:disabled { opacity: .45; cursor: not-allowed; }
+.btn-solid { background: var(--c-primary); color: #fff; }
+.btn-solid:active { background: var(--c-primary-dark); }
+.btn-danger { color: var(--c-danger); border-color: var(--c-danger); background: #ffecec; }
+.btn-danger:active { background: #ffd8d8; }
+.btn-success { color: var(--c-success); border-color: var(--c-success); background: #e8f9ef; }
+
+.btn-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.btn-grid .btn { margin: 0; }
+
+/* ---------- 状态徽章 ---------- */
+.badge {
+  display: inline-block; padding: 6px 14px;
+  border-radius: 999px; font-size: 18px; font-weight: 700;
+}
+.badge.ok     { background: #e8f9ef; color: var(--c-success); border: 2px solid var(--c-success); }
+.badge.warn   { background: #fdf3e0; color: var(--c-warning); border: 2px solid var(--c-warning); }
+.badge.danger { background: #ffecec; color: var(--c-danger);  border: 2px solid var(--c-danger); }
+.badge.muted  { background: #eef0f6; color: var(--c-text-sub); border: 2px solid var(--c-border); }
+
+/* ---------- 通知条（aria-live） ---------- */
+.toast-area {
+  position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%);
+  width: min(92vw, 600px); z-index: 100;
+}
+.toast {
+  padding: 14px 16px; margin-top: 8px;
+  border-radius: 12px; font-size: 18px; font-weight: 600;
+  box-shadow: 0 4px 16px rgba(0,0,0,.22);
+  animation: fadein .2s ease;
+}
+.toast.info    { background: #17325c; color: #fff; }
+.toast.success { background: var(--c-success); color: #fff; }
+.toast.warning { background: var(--c-warning); color: #fff; }
+.toast.danger  { background: var(--c-danger); color: #fff; }
+@keyframes fadein { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; } }
+
+/* ---------- 交通灯结果大展示 ---------- */
+.light-box {
+  text-align: center; padding: 18px 10px;
+  border-radius: var(--radius); border: 3px solid var(--c-border);
+  margin-top: 6px;
+}
+.light-box .light-color { font-size: 34px; font-weight: 800; letter-spacing: 4px; }
+.light-box .light-conf  { font-size: 20px; color: var(--c-text-sub); margin-top: 4px; }
+.light-box.red    { background: #ffe5e5; border-color: var(--c-danger); }
+.light-box.red .light-color { color: var(--c-danger); }
+.light-box.yellow { background: #fff6de; border-color: var(--c-warning); }
+.light-box.yellow .light-color { color: var(--c-warning); }
+.light-box.green  { background: #e3f7ea; border-color: var(--c-success); }
+.light-box.green .light-color { color: var(--c-success); }
+
+/* ---------- 家属端地图与画面 ---------- */
+.map-wrap {
+  height: 380px; border-radius: var(--radius);
+  overflow: hidden; border: 2px solid var(--c-border);
+}
+.snapshot {
+  width: 100%; border-radius: var(--radius);
+  border: 2px solid var(--c-border); display: block;
+  background: #222; min-height: 200px; object-fit: contain;
+}
+.snapshot.offline { padding: 60px 0; color: #999; background: #2a2a2a; font-size: 18px; text-align: center; }
+
+/* ---------- 首页入口 ---------- */
+.role-entry {
+  display: block; text-decoration: none; color: inherit;
+  background: var(--c-card); border: 3px solid var(--c-primary);
+  border-radius: var(--radius); box-shadow: var(--shadow);
+  padding: 26px 20px; margin: 18px 0; cursor: pointer;
+}
+.role-entry:active { transform: scale(.99); }
+.role-entry .role-title { font-size: 26px; font-weight: 800; color: var(--c-primary-dark); }
+.role-entry .role-desc { font-size: 17px; color: var(--c-text-sub); margin-top: 6px; }
+.role-entry .role-icon { font-size: 40px; }
+
+/* ---------- 设置对话框 ---------- */
+.dialog-mask {
+  position: fixed; inset: 0; background: rgba(0,0,0,.45);
+  display: flex; align-items: center; justify-content: center;
+  z-index: 200; padding: 14px;
+}
+.dialog {
+  background: #fff; border-radius: var(--radius);
+  width: min(96vw, 560px); max-height: 86vh; overflow: auto;
+  padding: 18px;
+}
+.dialog h2 { margin: 0 0 10px; font-size: 20px; }
+.dialog label { display: block; font-size: 16px; color: var(--c-text-sub); margin: 12px 0 4px; }
+.dialog input[type=text], .dialog input[type=url] {
+  width: 100%; font-size: 17px; padding: 10px;
+  border: 2px solid var(--c-border); border-radius: 10px;
+}
+
+/* ---------- 日志（调试） ---------- */
+.log {
+  background: #10162a; color: #bfe3c0;
+  font-family: Consolas, monospace; font-size: 13px;
+  border-radius: 10px; padding: 10px;
+  max-height: 180px; overflow: auto;
+  white-space: pre-wrap; word-break: break-all;
+}
+
+/* 视障放大模式（页面内开关切换 html.font-xlarge） */
+html.font-xlarge { font-size: 22px; }
+html.font-xlarge .value { font-size: 26px; }
+html.font-xlarge .btn { font-size: 23px; }
+

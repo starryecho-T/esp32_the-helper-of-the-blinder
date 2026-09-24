@@ -1,0 +1,34 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'com.smartcane.blind'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId 'com.smartcane.blind'
+        minSdk 24
+        targetSdk 34
+        versionCode 1
+        versionName '1.0'
+    }
+
+    // 直接用 debug 签名出 release 包：产物可即装即用（演示用途）
+    buildTypes {
+        release {
+            minifyEnabled false
+            signingConfig signingConfigs.debug
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_11
+        targetCompatibility JavaVersion.VERSION_11
+    }
+
+    // 防止打包时对 assets 里的 .aia 备份等大文件做压缩检查（assets 由 CI 只复制 html/css/js，此项兜底）
+    aaptOptions {
+        noCompress 'aia'
+    }
+}

@@ -1,0 +1,34 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'com.smartcane.family'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId 'com.smartcane.family'
+        minSdk 24
+        targetSdk 34
+        versionCode 1
+        versionName '1.0'
+    }
+
+    // 鐩存帴鐢?debug 绛惧悕鍑?release 鍖咃細浜х墿鍙嵆瑁呭嵆鐢紙婕旂ず鐢ㄩ€旓級
+    buildTypes {
+        release {
+            minifyEnabled false
+            signingConfig signingConfigs.debug
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_11
+        targetCompatibility JavaVersion.VERSION_11
+    }
+
+    // 闃叉鎵撳寘鏃跺 assets 閲岀殑 .aia 澶囦唤绛夊ぇ鏂囦欢鍋氬帇缂╂鏌ワ紙assets 鐢?CI 鍙鍒?html/css/js锛屾椤瑰厹搴曪級
+    aaptOptions {
+        noCompress 'aia'
+    }
+}

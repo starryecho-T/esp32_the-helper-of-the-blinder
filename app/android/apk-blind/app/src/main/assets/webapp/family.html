@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="theme-color" content="#1a6fe0">
+  <title>智能盲杖 · 家属端</title>
+  <link rel="stylesheet" href="css/app.css">
+  <!-- 高德地图 JS API（沿用原 App 的 key 与安全码） -->
+  <script>
+    window._AMapSecurityConfig = { securityJsCode: '1ba31432d1f5cc91137b44184d6b8420' };
+  </script>
+  <script src="https://webapi.amap.com/maps?v=2.0&key=658502c50f07f4071d019e4700b408c4"></script>
+</head>
+<body>
+  <header class="app-header">
+    <h1>智能盲杖<span class="sub">家属端 · 远程守护</span></h1>
+    <a class="back-link" href="index.html">← 返回</a>
+  </header>
+
+  <main class="page">
+    <!-- ===== SOS 状态 ===== -->
+    <section class="card" aria-label="SOS 状态">
+      <h2>SOS 状态</h2>
+      <p style="text-align:center;margin:6px 0 12px">
+        <span class="badge ok" id="sosBadge" aria-live="assertive">没有报警</span>
+      </p>
+      <div class="row">
+        <span class="label">数据更新</span>
+        <span class="value muted" id="lastUpdate">--</span>
+      </div>
+    </section>
+
+    <!-- ===== GPS 位置 ===== -->
+    <section class="card" aria-label="GPS 位置">
+      <h2>GPS 位置</h2>
+      <div class="row">
+        <span class="label">纬度</span>
+        <span class="value muted" id="famLat">--</span>
+      </div>
+      <div class="row">
+        <span class="label">经度</span>
+        <span class="value muted" id="famLng">--</span>
+      </div>
+    </section>
+
+    <!-- ===== 地图 ===== -->
+    <section class="card" aria-label="位置地图">
+      <h2>家人位置地图</h2>
+      <div class="map-wrap" id="mapContainer" role="img" aria-label="家人位置高德地图"></div>
+    </section>
+
+    <!-- ===== 前哨实时画面 ===== -->
+    <section class="card" aria-label="实时画面">
+      <h2>前哨实时画面</h2>
+      <img id="snapshotImg" class="snapshot" alt="前哨摄像头实时画面"
+           src="" aria-live="polite">
+      <div class="row">
+        <span class="label">画面刷新</span>
+        <span class="value muted" id="snapState">每 2 秒</span>
+      </div>
+    </section>
+
+    <!-- ===== 调试日志 ===== -->
+    <details class="card">
+      <summary style="font-size:18px;font-weight:700">调试日志</summary>
+      <div class="log" id="logView" aria-label="调试日志"></div>
+    </details>
+  </main>
+
+  <div class="toast-area" id="toastArea" aria-live="polite"></div>
+
+  <script src="js/core/config.js"></script>
+  <script src="js/core/bus.js"></script>
+  <script src="js/core/store.js"></script>
+  <script src="js/core/protocol.js"></script>
+  <script src="js/services/firebase.js"></script>
+  <script src="js/services/trafficlight.js"></script>
+  <script src="js/family/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="theme-color" content="#1a6fe0">
+  <title>智能盲杖 · App</title>
+  <link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+  <header class="app-header">
+    <h1>智能盲杖<span class="sub">安全辅助系统 · WebApp</span></h1>
+  </header>
+
+  <main class="page">
+    <a class="role-entry" href="blind.html" aria-label="进入盲人端">
+      <div class="role-icon" aria-hidden="true">🦯</div>
+      <div class="role-title">盲人端</div>
+      <div class="role-desc">连接盲杖 · 模式切换 · 交通灯识别 · 语音播报 · 位置上报</div>
+    </a>
+
+    <a class="role-entry" href="family.html" aria-label="进入家属端">
+      <div class="role-icon" aria-hidden="true">👨‍👩‍👦</div>
+      <div class="role-title">家属端</div>
+      <div class="role-desc">SOS 报警状态 · 家人实时位置地图 · 前哨实时画面</div>
+    </a>
+
+    <div class="card">
+      <h2>使用说明</h2>
+      <p style="font-size:16px;color:var(--c-text-sub)">
+        手机 Chrome 浏览器打开本页面即可使用。
+        蓝牙连接需要 <b>HTTPS</b> 地址（或 localhost），部署方法见项目
+        <code>app/webapp/README.md</code>。
+      </p>
+    </div>
+  </main>
+
+  <div class="toast-area" id="toastArea" aria-live="polite"></div>
+</body>
+</html>

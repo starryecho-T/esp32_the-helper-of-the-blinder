@@ -1,0 +1,64 @@
+name: Build Android APKs
+
+# 云端编译两个手机 App（本机无需 Android Studio / JDK / Node）：
+#   apk-blind  → 智慧盲杖（盲人端，WebView + 原生 BLE 桥）
+#   apk-family → 智慧盲杖·家属端（WebView 轮询 + 地图）
+# 产物在 Actions 运行页面的 Artifacts 里下载。
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'app/webapp/**'
+      - 'app/android/**'
+      - '.github/workflows/build-apk.yml'
+
+jobs:
+  build:
+    name: Build ${{ matrix.project }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - project: apk-blind
+            artifact: SmartCane-blind-apk
+          - project: apk-family
+            artifact: SmartCane-family-apk
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Gradle 8.9
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+
+      - name: Sync webapp into APK assets
+        run: |
+          for proj in apk-blind apk-family; do
+            dest="app/android/$proj/app/src/main/assets/webapp"
+            rm -rf "$dest"
+            mkdir -p "$dest"
+            cp app/webapp/*.html "$dest/"
+            cp -r app/webapp/css app/webapp/js "$dest/"
+          done
+          echo "打包的页面文件："
+          find app/android/apk-blind/app/src/main/assets/webapp -type f | sort
+
+      - name: Build APK (release, debug-signed)
+        working-directory: app/android/${{ matrix.project }}
+        run: gradle assembleRelease --no-daemon
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: app/android/${{ matrix.project }}/app/build/outputs/apk/release/*.apk
+          if-no-files-found: error
