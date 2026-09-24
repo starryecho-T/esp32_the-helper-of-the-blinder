@@ -16,3 +16,5 @@ local-config.json
 # OS files
 Thumbs.db
 .DS_Store
+__pycache__/
+*.pyc

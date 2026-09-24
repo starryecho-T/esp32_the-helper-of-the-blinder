@@ -252,3 +252,58 @@ def snapshot(t: str = '', token: str = ''):
 def latest_jpg(token: str = ''):
     """/snapshot 的别名，方便直接在浏览器里打开查看。"""
     return snapshot(token=token)
+
+
+# ---------------------------------------------------------------------------
+# 自建轻量"实时数据库"（/fb/*）—— 替代 Firebase RTDB 的双端通信
+#
+# 背景：Firebase（Google 境外服务）在国内时断时续（App 端曾报 Error 1101），
+# 而双端 App 只用它中转两样东西：盲人 GPS 位置 + SOS 求救。
+# 这里在自有服务器上实现一套 REST 格式与 Firebase 完全兼容的接口，
+# 前端仅需把 config.js 里 firebase.baseUrl 改成 http://<本服务器>/fb 即可，
+# firebase.js / blind 端 / family 端的代码一行都不用动：
+#
+#   PUT /fb/<node>/<key>.json   写入一个键（盲人端：上报位置 / SOS）
+#   GET /fb/<node>.json         读整个节点（家属端轮询；空节点返回 null，同 Firebase）
+#   GET /fb/<node>/<key>.json   读单个键
+#
+# 示例（blind001 为盲人节点 ID）：
+#   PUT /fb/blind001/location.json  body={"latitude":30.0,"longitude":120.0}
+#   PUT /fb/blind001/sos.json       body=true
+#   GET /fb/blind001.json           → {"location":{...},"sos":true}
+#
+# 说明：数据存内存（重启即清空，重新上报即恢复）；演示环境暂不加鉴权，
+# 日后可仿照 /upload 的 token 机制补一层。
+# ---------------------------------------------------------------------------
+_fb_lock = threading.Lock()
+_fb_nodes = {}   # {node: {key: value, ...}}
+
+
+@app.put('/fb/{node}/{key}.json')
+async def fb_put(node: str, key: str, request: Request):
+    """写入一个键（与 Firebase RTDB 的 PUT 语义一致，返回写入的值）。"""
+    try:
+        value = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail='invalid json')
+    with _fb_lock:
+        _fb_nodes.setdefault(node, {})[key] = value
+    return value
+
+
+@app.get('/fb/{node}/{key}.json')
+def fb_get_key(node: str, key: str):
+    """读取单个键；不存在时与 Firebase 一致返回 404。"""
+    with _fb_lock:
+        node_data = _fb_nodes.get(node, {})
+    if key not in node_data:
+        raise HTTPException(status_code=404, detail='not found')
+    return node_data[key]
+
+
+@app.get('/fb/{node}.json')
+def fb_get_node(node: str):
+    """读取整个节点；节点不存在时返回 null（与 Firebase 一致）。"""
+    with _fb_lock:
+        node_data = dict(_fb_nodes.get(node, {}))
+    return node_data or None

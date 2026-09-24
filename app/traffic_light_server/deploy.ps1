@@ -60,7 +60,9 @@ $viewToken = -join ($chars | Get-Random -Count 16 | ForEach-Object { [char]$_ })
 $envVars = @{
     YOLO_MODEL    = Join-Path $AppDir "yolov8n.pt"
     FRAME_PATH    = Join-Path $AppDir "latest.jpg"
-    FRAME_MAX_AGE = "20"
+    # 帧过期时间：必须 > 前哨推流间隔（当前 30s），否则 /detect 与 /snapshot
+    # 会在"帧已过旧"的窗口里直接报 no fresh frame。30s 间隔 → 这里给 45s 余量。
+    FRAME_MAX_AGE = "45"
     CAMERA_URL    = ""
     DEVICE_TOKEN  = $token
     VIEW_TOKEN    = $viewToken

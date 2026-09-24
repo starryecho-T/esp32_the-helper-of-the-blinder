@@ -25,9 +25,11 @@
       detectBaseUrl: 'http://39.106.216.80:8000',  // /detect /snapshot 所在服务器
       viewToken: 'Jxt7HvzaZVfhkF1D'                // 家属端查看画面的 VIEW_TOKEN
     },
-    // —— Firebase 实时数据库（REST）——
+    // —— 双端通信（自建 /fb 接口，格式与 Firebase RTDB REST 完全兼容）——
+    // 原来走境外 Firebase 经常连不上（Error 1101），现改用自有云服务器。
+    // firebase.js 只认 baseUrl + blindId，故无需改任何其他代码。
     firebase: {
-      baseUrl: 'https://smartcane-ae76a-default-rtdb.asia-southeast1.firebasedatabase.app',
+      baseUrl: 'http://39.106.216.80:8000/fb',
       blindId: 'blind001'                          // 盲人节点 ID
     },
     // —— 轮询间隔（毫秒）——
