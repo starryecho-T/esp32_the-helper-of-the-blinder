@@ -60,9 +60,9 @@
       $('mapContainer').textContent = '地图加载失败，请检查网络';
       return;
     }
-    // 默认中心与原 App 的 HTML 保持一致
-    map = new AMap.Map('mapContainer', { zoom: 15, center: [139.767125, 35.681236] });
-    marker = new AMap.Marker({ position: [139.767125, 35.681236], title: '家人当前位置' });
+    // 默认中心：北京（原代码误留东京坐标，已修正；收到定位后自动跳转到实际位置）
+    map = new AMap.Map('mapContainer', { zoom: 15, center: [116.4074, 39.9042] });
+    marker = new AMap.Marker({ position: [116.4074, 39.9042], title: '家人当前位置' });
     marker.setMap(map);
   }
 

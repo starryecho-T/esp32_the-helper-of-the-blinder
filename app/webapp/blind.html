@@ -78,12 +78,16 @@
     <section class="card" aria-label="位置上报">
       <h2>位置上报</h2>
       <div class="row">
-        <span class="label">纬度</span>
+        <span class="label">纬度（WGS-84）</span>
         <span class="value muted" id="geoLat">--</span>
       </div>
       <div class="row">
-        <span class="label">经度</span>
+        <span class="label">经度（WGS-84）</span>
         <span class="value muted" id="geoLng">--</span>
+      </div>
+      <div class="row">
+        <span class="label">定位精度（浏览器）</span>
+        <span class="value muted" id="geoAcc">--</span>
       </div>
       <div class="row">
         <span class="label">SOS 上报</span>
@@ -109,6 +113,7 @@
   <script src="js/services/ble.js"></script>
   <script src="js/services/firebase.js"></script>
   <script src="js/services/trafficlight.js"></script>
+  <script src="js/services/coords.js"></script>
   <script src="js/services/geo.js"></script>
   <script src="js/services/tts.js"></script>
   <script src="js/blind/app.js"></script>

@@ -14,7 +14,7 @@
 
   var S = global.SmartCane;
   var bus = S.bus, EVENTS = S.EVENTS, store = S.store, protocol = S.protocol;
-  var ble = S.ble, fb = S.firebase, light = S.trafficLight, geo = S.geo, tts = S.tts;
+  var ble = S.ble, fb = S.firebase, light = S.trafficLight, geo = S.geo, tts = S.tts, coords = S.coords;
   var cfg = S.config;
 
   var $ = function (id) { return document.getElementById(id); };
@@ -187,16 +187,19 @@
     store.set('geo', p);
     $('geoLat').textContent = p.latitude.toFixed(6);
     $('geoLng').textContent = p.longitude.toFixed(6);
+    $('geoAcc').textContent = p.accuracy ? ('±' + Math.round(p.accuracy) + ' 米') : '--';
   });
   bus.on(EVENTS.GEO_ERROR, function (e) { log('GPS：' + e.message); });
 
-  /** 对应原过程「立即上传GPS」 */
+  /** 对应原过程「立即上传GPS」——上报前把 WGS-84 原始坐标转成 GCJ-02（高德坐标系） */
   function uploadGpsNow() {
     var p = geo.current();
     if (!p) { log('暂无 GPS 定位，跳过上传'); return Promise.resolve(); }
-    return fb.putLocation(p.latitude, p.longitude)
+    var g = coords.wgs84ToGcj02(p.latitude, p.longitude);
+    return fb.putLocation(g.latitude, g.longitude)
       .then(function () {
-        log('GPS 已上传 ' + p.latitude.toFixed(5) + ',' + p.longitude.toFixed(5));
+        log('GPS 已上传 ' + g.latitude.toFixed(5) + ',' + g.longitude.toFixed(5) +
+            '（GCJ-02；WGS-84 原始 ' + p.latitude.toFixed(5) + ',' + p.longitude.toFixed(5) + '）');
       });
   }
 
