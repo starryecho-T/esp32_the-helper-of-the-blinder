@@ -36,6 +36,13 @@ import java.util.UUID;
  *
  * 对应原 App Inventor 的 BluetoothLE 扩展行为：
  *   扫描并连接 → RegisterForStrings(TX NOTIFY) → WriteStrings(RX)
+ *
+ * 自动重连（重连状态仅在主线程读写，Binder 回调一律 post 到主线程）：
+ *   - 连接建立后意外掉线（用户未主动断开）→ 指数退避重连 1s→2s→4s→…封顶 15s，无限重试；
+ *     优先对 lastDevice 直连，每 RESCAN_EVERY 次插入一轮重新扫描兜底。
+ *   - 首次连接（从未连上过）失败 → 重试 INIT_MAX_ATTEMPTS 次后放弃并报错。
+ *   - JS 主动 disconnect() / Activity 销毁 → 立即停止一切重连。
+ *   - 单轮扫描 / 单次 GATT 连接均有超时，保证重连循环不会被卡死。
  */
 public class BleBridge {
 
@@ -43,7 +50,12 @@ public class BleBridge {
     public static final String JS_NAME = "SmartCaneNative";
 
     private static final UUID CCC = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb");
-    private static final long SCAN_TIMEOUT_MS = 15000;
+    private static final long SCAN_TIMEOUT_MS = 15000;     // 单轮扫描超时
+    private static final long CONNECT_TIMEOUT_MS = 12000;  // 单次 GATT 连接（到订阅完成）超时
+    private static final long RECONNECT_FIRST_MS = 1000;   // 重连退避起点
+    private static final long RECONNECT_MAX_MS = 15000;    // 重连退避上限
+    private static final int INIT_MAX_ATTEMPTS = 3;        // 首次连接最多尝试次数
+    private static final int RESCAN_EVERY = 3;             // 每 N 次重连插入一轮重新扫描
 
     private final Activity activity;
     private final Handler main = new Handler(Looper.getMainLooper());
@@ -57,7 +69,14 @@ public class BleBridge {
     private BluetoothGattCharacteristic rxChar; // 手机 → 盲杖
     private BluetoothGattCharacteristic txChar; // 盲杖 → 手机
     private volatile boolean connected = false;
-    private boolean scanning = false;
+    private volatile boolean scanning = false;
+
+    // —— 自动重连状态（仅在主线程读写）——
+    private volatile boolean wantConnected = false;  // 用户意图：connect() 后为真，disconnect()/shutdown() 后为假
+    private boolean everConnected = false;           // 本次会话是否成功连上过（决定无限重连还是有限重试）
+    private BluetoothDevice lastDevice = null;       // 上次（尝试）连接的设备，重连优先直连
+    private int attempt = 0;                         // 已连续失败的尝试次数（连接成功后清零）
+    private volatile boolean destroyed = false;      // Activity 已销毁，拦截一切 JS 回调
 
     // 串行写队列（GATT 同时只能有一个写请求在途）
     private final Queue<byte[]> writeQueue = new LinkedList<>();
@@ -78,7 +97,14 @@ public class BleBridge {
         this.rxUuid = lower(rxUuid);
         this.txUuid = lower(txUuid);
         this.namePrefix = namePrefix == null ? "" : namePrefix.trim();
-        main.post(this::startScan);
+        main.post(() -> {
+            cancelPending();      // 掐掉可能还在跑的旧扫描 / 旧重连任务
+            closeGatt();
+            wantConnected = true;
+            everConnected = false;
+            attempt = 0;
+            startScan();          // 首次连接仍从扫描开始（等价原「选择设备并连接」）
+        });
     }
 
     /** 发送一行文本（自动补换行，等价原 WriteStrings） */
@@ -95,10 +121,27 @@ public class BleBridge {
         });
     }
 
-    /** 断开连接 */
+    /** 断开连接并停止自动重连（onDisconnected 恰好回调一次，供 JS 复位 UI） */
     @JavascriptInterface
     public void disconnect() {
-        main.post(this::closeGatt);
+        main.post(() -> {
+            wantConnected = false;
+            cancelPending();
+            closeGatt();
+            // closeGatt 已置空 gatt，Binder 迟到的断开回调会被 handleStateChange
+            // 的过期回调守卫拦下，因此在这里同步通知（恰好一次）
+            emitDisconnected("disconnected");
+        });
+    }
+
+    /** Activity onDestroy 调用：静默关闭蓝牙并停止一切任务（不再回调 JS） */
+    public void shutdown() {
+        destroyed = true;
+        main.post(() -> {
+            wantConnected = false;
+            cancelPending();
+            closeGatt();
+        });
     }
 
     @JavascriptInterface
@@ -112,18 +155,18 @@ public class BleBridge {
 
     private void startScan() {
         if (!hasBlePermissions()) {
-            emitError("缺少蓝牙/定位权限，请到系统设置中授予后重试");
+            giveUp("缺少蓝牙/定位权限，请到系统设置中授予后重试");
             return;
         }
         BluetoothManager bm = (BluetoothManager) activity.getSystemService(Context.BLUETOOTH_SERVICE);
         adapter = bm != null ? bm.getAdapter() : null;
         if (adapter == null || !adapter.isEnabled()) {
-            emitError("手机蓝牙未开启，请先打开蓝牙");
+            onAttemptFailed("手机蓝牙未开启");   // 用户可能正要开蓝牙，静默重试即可
             return;
         }
         scanner = adapter.getBluetoothLeScanner();
         if (scanner == null) {
-            emitError("蓝牙不可用（扫描器获取失败）");
+            onAttemptFailed("蓝牙不可用（扫描器获取失败）");
             return;
         }
         closeGatt();
@@ -135,14 +178,16 @@ public class BleBridge {
                 .build();
         try {
             scanner.startScan(null, settings, scanCallback);
+            main.postDelayed(scanTimeout, SCAN_TIMEOUT_MS);
         } catch (Exception e) {
             scanning = false;
-            emitError("扫描启动失败：" + e.getMessage());
+            giveUp("扫描启动失败：" + e.getMessage());
         }
     }
 
     private void stopScan() {
         scanning = false;
+        main.removeCallbacks(scanTimeout);
         try {
             if (scanner != null) scanner.stopScan(scanCallback);
         } catch (Exception ignored) {
@@ -154,7 +199,7 @@ public class BleBridge {
         public void onScanResult(int callbackType, ScanResult result) {
             if (!scanning) return;
             BluetoothDevice dev = result.getDevice();
-            String name = dev.getName() != null ? dev.getName() : "";
+            String name = safeName(dev);
             boolean byName = namePrefix.isEmpty()
                     || name.toLowerCase().startsWith(namePrefix.toLowerCase());
             boolean byUuid = false;
@@ -170,96 +215,141 @@ public class BleBridge {
                 }
             }
             if (byName || byUuid) {
-                stopScan();
-                connectGatt(dev);
+                // Binder 线程 → 主线程串行处理，防止同一设备触发两次连接
+                main.post(() -> {
+                    if (!scanning) return;
+                    stopScan();
+                    connectDevice(dev);
+                });
             }
         }
 
         @Override
         public void onScanFailed(int errorCode) {
-            scanning = false;
-            emitError("扫描失败，错误码 " + errorCode);
+            main.post(() -> {
+                scanning = false;
+                main.removeCallbacks(scanTimeout);
+                giveUp("蓝牙扫描失败（错误码 " + errorCode + "），请关闭再打开手机蓝牙后重试");
+            });
         }
     };
+
+    // ------------------------------------------------------------------
+    // 自动重连引擎（全部在主线程执行）
+    // ------------------------------------------------------------------
+
+    /** 扫描超时：本轮没扫到匹配设备 → 记一次失败并按策略重试 */
+    private final Runnable scanTimeout = new Runnable() {
+        @Override
+        public void run() {
+            if (!scanning) return;
+            stopScan();
+            onAttemptFailed("扫描超时：附近没有发现盲杖");
+        }
+    };
+
+    /** 连接超时：connectGatt 可能长时间无回调，防止重连循环被卡死 */
+    private final Runnable connectTimeout = new Runnable() {
+        @Override
+        public void run() {
+            if (connected || gatt == null) return;
+            BluetoothGatt g = gatt;
+            gatt = null;
+            closeGattQuietly(g);
+            onAttemptFailed("连接超时");
+        }
+    };
+
+    /** 到点的重连动作：优先直连上次设备，每 RESCAN_EVERY 次重新扫描一轮 */
+    private final Runnable reconnectTask = new Runnable() {
+        @Override
+        public void run() {
+            if (!wantConnected || connected) return;
+            if (lastDevice != null && attempt % RESCAN_EVERY != 0) {
+                connectDevice(lastDevice);
+            } else {
+                startScan();
+            }
+        }
+    };
+
+    /** 单次尝试失败的统一入口（静默计数，达到放弃条件才报错，避免重试刷屏） */
+    private void onAttemptFailed(String why) {
+        if (!wantConnected || connected) return;
+        attempt++;
+        if (!everConnected && attempt >= INIT_MAX_ATTEMPTS) {
+            giveUp(why + "（已尝试 " + attempt + " 次），请确认盲杖已开机并在附近");
+            return;
+        }
+        scheduleNextAttempt();
+    }
+
+    /** 按指数退避安排下一次尝试：1s → 2s → 4s → … 封顶 15s */
+    private void scheduleNextAttempt() {
+        if (!wantConnected || connected) return;
+        long delay = RECONNECT_FIRST_MS;
+        for (int i = 1; i < attempt && delay < RECONNECT_MAX_MS; i++) delay *= 2;
+        if (delay > RECONNECT_MAX_MS) delay = RECONNECT_MAX_MS;
+        emit("window.__nativeBle&&window.__nativeBle.onReconnecting&&window.__nativeBle.onReconnecting("
+                + attempt + "," + delay + ")");
+        main.postDelayed(reconnectTask, delay);
+    }
+
+    /** 放弃本次连接会话：停任务 + 报错 + 通知 JS 复位 UI */
+    private void giveUp(String msg) {
+        wantConnected = false;
+        cancelPending();
+        closeGatt();
+        emitError(msg);
+        emitDisconnected("connect-failed");
+    }
+
+    /** 取消所有挂起任务（扫描超时 / 连接超时 / 重连任务） */
+    private void cancelPending() {
+        main.removeCallbacks(scanTimeout);
+        main.removeCallbacks(connectTimeout);
+        main.removeCallbacks(reconnectTask);
+        if (scanning) stopScan();
+    }
 
     // ------------------------------------------------------------------
     // GATT 连接与数据
     // ------------------------------------------------------------------
 
-    private void connectGatt(BluetoothDevice dev) {
-        String name = dev.getName() != null ? dev.getName() : "未知设备";
+    private void connectDevice(BluetoothDevice dev) {
+        main.removeCallbacks(connectTimeout);
+        lastDevice = dev;
+        String name = safeName(dev);
+        name = (name == null || name.isEmpty()) ? "未知设备" : name;
         emit("window.__nativeBle&&window.__nativeBle.onConnecting&&window.__nativeBle.onConnecting("
                 + quote(name) + ")");
         try {
             gatt = dev.connectGatt(activity, false, gattCallback);
+            if (gatt == null) {
+                onAttemptFailed("连接建立失败");
+                return;
+            }
+            main.postDelayed(connectTimeout, CONNECT_TIMEOUT_MS);
         } catch (SecurityException e) {
-            emitError("连接被系统拒绝（缺少蓝牙权限）：" + e.getMessage());
+            gatt = null;
+            giveUp("连接被系统拒绝（缺少蓝牙权限）：" + e.getMessage());
         }
     }
 
     private final BluetoothGattCallback gattCallback = new BluetoothGattCallback() {
         @Override
         public void onConnectionStateChange(BluetoothGatt g, int status, int newState) {
-            if (newState == android.bluetooth.BluetoothProfile.STATE_CONNECTED) {
-                try {
-                    g.discoverServices();
-                } catch (SecurityException e) {
-                    emitError("发现服务失败（缺少蓝牙权限）");
-                }
-            } else if (newState == android.bluetooth.BluetoothProfile.STATE_DISCONNECTED) {
-                boolean was = connected;
-                connected = false;
-                writeQueue.clear();
-                writing = false;
-                closeGattQuietly(g);
-                emit("window.__nativeBle&&window.__nativeBle.onDisconnected&&window.__nativeBle.onDisconnected({reason:"
-                        + (was ? "'disconnected'" : "'connect-failed'") + "})");
-            }
+            main.post(() -> handleStateChange(g, newState));
         }
 
         @Override
         public void onServicesDiscovered(BluetoothGatt g, int status) {
-            if (status != BluetoothGatt.GATT_SUCCESS) {
-                emitError("发现服务失败，status=" + status);
-                return;
-            }
-            BluetoothGattService svc = g.getService(UUID.fromString(serviceUuid));
-            if (svc == null) {
-                emitError("设备未提供 NUS 服务（固件不匹配？）");
-                closeGatt();
-                return;
-            }
-            rxChar = svc.getCharacteristic(UUID.fromString(rxUuid));
-            txChar = svc.getCharacteristic(UUID.fromString(txUuid));
-            if (rxChar == null || txChar == null) {
-                emitError("未找到 NUS 收发特征");
-                closeGatt();
-                return;
-            }
-            // 订阅 TX NOTIFY（等价原 RegisterForStrings）
-            g.setCharacteristicNotification(txChar, true);
-            BluetoothGattDescriptor d = txChar.getDescriptor(CCC);
-            if (d != null) {
-                try {
-                    d.setValue(BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE);
-                    g.writeDescriptor(d);
-                } catch (SecurityException e) {
-                    emitError("订阅通知失败（缺少蓝牙权限）");
-                }
-            } else {
-                onReady(g);
-            }
+            main.post(() -> handleServicesDiscovered(g, status));
         }
 
         @Override
         public void onDescriptorWrite(BluetoothGatt g, BluetoothGattDescriptor d, int status) {
-            if (d != null && CCC.equals(d.getUuid())) {
-                if (status == BluetoothGatt.GATT_SUCCESS) {
-                    onReady(g);
-                } else {
-                    emitError("订阅通知失败，status=" + status);
-                }
-            }
+            main.post(() -> handleDescriptorWrite(g, d, status));
         }
 
         @Override
@@ -277,15 +367,100 @@ public class BleBridge {
         }
     };
 
+    /** 连接状态变化（主线程，由 Binder 回调转发） */
+    private void handleStateChange(BluetoothGatt g, int newState) {
+        if (gatt == null || g != gatt) return;   // 过期回调：连接已被替换或清理
+        if (newState == android.bluetooth.BluetoothProfile.STATE_CONNECTED) {
+            // 超时继续守到「订阅完成」（onReady 才取消），这里只推进服务发现
+            main.removeCallbacks(connectTimeout);
+            main.postDelayed(connectTimeout, CONNECT_TIMEOUT_MS);
+            try {
+                g.discoverServices();
+            } catch (SecurityException e) {
+                giveUp("发现服务失败（缺少蓝牙权限）");
+            }
+        } else if (newState == android.bluetooth.BluetoothProfile.STATE_DISCONNECTED) {
+            main.removeCallbacks(connectTimeout);
+            boolean was = connected;
+            connected = false;
+            writeQueue.clear();
+            writing = false;
+            closeGattQuietly(g);
+            if (gatt == g) gatt = null;
+            if (!wantConnected) {
+                // 用户已主动断开（或已放弃）：只通知 JS，不再重试
+                emitDisconnected(was ? "disconnected" : "connect-failed");
+                return;
+            }
+            if (was) {
+                // 连接建立后意外掉线 → 自动重连（无限次，退避封顶 15s）
+                emitDisconnected("lost");
+                attempt = 1;              // 掉线本身算第 1 次失败，退避从 1s 开始
+                scheduleNextAttempt();
+            } else {
+                onAttemptFailed("连接失败");
+            }
+        }
+    }
+
+    /** 服务发现完成（主线程，由 Binder 回调转发） */
+    private void handleServicesDiscovered(BluetoothGatt g, int status) {
+        if (gatt == null || g != gatt) return;
+        if (status != BluetoothGatt.GATT_SUCCESS) {
+            closeGattQuietly(g);
+            gatt = null;
+            onAttemptFailed("发现服务失败，status=" + status);
+            return;
+        }
+        BluetoothGattService svc = g.getService(UUID.fromString(serviceUuid));
+        if (svc == null) {
+            // 连上了但不是盲杖固件 → 重试无意义，直接放弃
+            giveUp("设备未提供 NUS 服务（固件不匹配？）");
+            return;
+        }
+        rxChar = svc.getCharacteristic(UUID.fromString(rxUuid));
+        txChar = svc.getCharacteristic(UUID.fromString(txUuid));
+        if (rxChar == null || txChar == null) {
+            giveUp("未找到 NUS 收发特征");
+            return;
+        }
+        try {
+            // 订阅 TX NOTIFY（等价原 RegisterForStrings）
+            g.setCharacteristicNotification(txChar, true);
+            BluetoothGattDescriptor d = txChar.getDescriptor(CCC);
+            if (d != null) {
+                d.setValue(BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE);
+                g.writeDescriptor(d);
+            } else {
+                onReady(g);
+            }
+        } catch (SecurityException e) {
+            giveUp("订阅通知失败（缺少蓝牙权限）");
+        }
+    }
+
+    /** CCC 描述符写入完成（主线程，由 Binder 回调转发） */
+    private void handleDescriptorWrite(BluetoothGatt g, BluetoothGattDescriptor d, int status) {
+        if (gatt == null || g != gatt || d == null || !CCC.equals(d.getUuid())) return;
+        if (status == BluetoothGatt.GATT_SUCCESS) {
+            onReady(g);
+        } else {
+            closeGattQuietly(g);
+            gatt = null;
+            onAttemptFailed("订阅通知失败，status=" + status);
+        }
+    }
+
     /** 订阅成功 → 通知 JS 已连接（行拆分在 JS 侧 protocol.splitLines 完成） */
     private void onReady(BluetoothGatt g) {
         connected = true;
+        everConnected = true;      // 从此掉线进入「无限自动重连」
+        attempt = 0;               // 清零失败计数，下次掉线退避从 1s 重新开始
+        lastDevice = g.getDevice();
+        main.removeCallbacks(connectTimeout);
         String name = "盲杖";
-        try {
-            BluetoothDevice dev = g.getDevice();
-            if (dev != null && dev.getName() != null) name = dev.getName();
-        } catch (SecurityException ignored) {
-        }
+        String n = safeName(g.getDevice());
+        if (n != null && !n.isEmpty()) name = n;
         emit("window.__nativeBle&&window.__nativeBle.onConnected&&window.__nativeBle.onConnected("
                 + quote(name) + ")");
         pumpWrite();
@@ -314,6 +489,7 @@ public class BleBridge {
     // ---------------- 清理与工具 ----------------
 
     private void closeGatt() {
+        main.removeCallbacks(connectTimeout);
         closeGattQuietly(gatt);
         gatt = null;
         rxChar = null;
@@ -353,12 +529,27 @@ public class BleBridge {
         return JSONObject.quote(s == null ? "" : s);
     }
 
+    /** 读设备名（Android 12+ 缺 BLUETOOTH_CONNECT 时 getName 会抛 SecurityException） */
+    private static String safeName(BluetoothDevice dev) {
+        try {
+            return dev == null ? null : dev.getName();
+        } catch (SecurityException e) {
+            return null;
+        }
+    }
+
     private void emit(final String js) {
+        if (destroyed) return;   // WebView 已销毁，不再注入 JS
         ((MainActivity) activity).postJs(js);
     }
 
     private void emitError(String msg) {
         emit("window.__nativeBle&&window.__nativeBle.onError&&window.__nativeBle.onError(" + quote(msg) + ")");
+    }
+
+    private void emitDisconnected(String reason) {
+        emit("window.__nativeBle&&window.__nativeBle.onDisconnected&&window.__nativeBle.onDisconnected({reason:"
+                + quote(reason) + "})");
     }
 }
 

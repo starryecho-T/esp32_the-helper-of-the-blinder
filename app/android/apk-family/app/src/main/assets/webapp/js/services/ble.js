@@ -27,8 +27,18 @@
     onConnecting: function (name) {
       bus.emit(EVENTS.BLE_CONNECTING, { name: name || '盲杖' });
     },
+    onReconnecting: function (attempt, delayMs) {
+      state.nativeReconnecting = true;
+      bus.emit(EVENTS.BLE_CONNECTING, {
+        name: '重连中（第 ' + attempt + ' 次）…',
+        reconnecting: true,
+        attempt: attempt,
+        delayMs: delayMs
+      });
+    },
     onConnected: function (name) {
       state.nativeConnected = true;
+      state.nativeReconnecting = false;
       state.lineBuf = '';
       bus.emit(EVENTS.BLE_CONNECTED, { name: name || '盲杖', id: 'native' });
     },
@@ -39,11 +49,15 @@
     },
     onDisconnected: function (payload) {
       state.nativeConnected = false;
+      state.nativeReconnecting = false;
       state.lineBuf = '';
       bus.emit(EVENTS.BLE_DISCONNECTED, { reason: (payload && payload.reason) || 'disconnected' });
     },
     onError: function (msg) {
-      bus.emit(EVENTS.BLE_ERROR, { message: String(msg || '原生蓝牙错误') });
+      var m = String(msg || '原生蓝牙错误');
+      bus.emit(EVENTS.BLE_ERROR, { message: m });
+      // 原生错误同样走 NOTIFY 弹 toast（与浏览器路径 fail() 行为一致，盲人端靠听觉感知）
+      bus.emit(EVENTS.NOTIFY, { message: m, type: 'danger' });
     }
   };
 
@@ -52,7 +66,8 @@
     rxChar: null,      // 手机 → 盲杖
     txChar: null,      // 盲杖 → 手机
     lineBuf: '', textDecoder: null,
-    nativeConnected: false  // 原生桥（APK 内）连接标志
+    nativeConnected: false,     // 原生桥（APK 内）连接标志
+    nativeReconnecting: false   // 原生桥自动重连进行中
   };
 
   function isSupported() {
@@ -149,9 +164,13 @@
   /** 断开连接（对应原 Disconnect） */
   function disconnect() {
     if (isNativeAvailable()) {
-      try { native.disconnect(); } catch (e) { /* 忽略 */ }
-      state.nativeConnected = false;
-      bus.emit(EVENTS.BLE_DISCONNECTED, { reason: 'disconnected' });
+      // 原生层会恰好回调一次 onDisconnected（含本来就没连上的情况），此处不再重复抛事件
+      try {
+        native.disconnect();
+      } catch (e) {
+        state.nativeConnected = false;
+        bus.emit(EVENTS.BLE_DISCONNECTED, { reason: 'disconnected' });
+      }
       return;
     }
     if (state.device && state.device.gatt && state.device.gatt.connected) {
@@ -193,7 +212,10 @@
   function writeLine(text) {
     if (isNativeAvailable()) {
       if (!state.nativeConnected) {
-        bus.emit(EVENTS.NOTIFY, { message: '请先连接智能盲杖', type: 'warning' });
+        var msg = state.nativeReconnecting
+          ? '盲杖连接已断开，正在自动重连，请稍候…'
+          : '请先连接智能盲杖';
+        bus.emit(EVENTS.NOTIFY, { message: msg, type: 'warning' });
         return Promise.reject(new Error('BLE not connected'));
       }
       try {

@@ -39,13 +39,13 @@
   bus.on(EVENTS.NOTIFY, function (n) { toast(n.message, n.type); });
 
   // ================= BLE 连接区 =================
-  function setBleUi(connected, connecting, name) {
-    $('bleState').textContent = connecting ? '正在连接…' : (connected ? '已连接' : '未连接');
+  function setBleUi(connected, connecting, name, statusText) {
+    $('bleState').textContent = statusText || (connecting ? '正在连接…' : (connected ? '已连接' : '未连接'));
     $('bleState').className = 'value ' + (connected ? 'ok' : 'muted');
     $('bleDevice').textContent = name || (connected ? '未知设备' : '未选择');
     $('bleDevice').className = 'value ' + (connected ? '' : 'muted');
     $('btnConnect').disabled = connected || connecting;
-    $('btnDisconnect').disabled = !connected;
+    $('btnDisconnect').disabled = !connected && !connecting; // 连接中/重连中也可手动取消
     ['btnMode0', 'btnMode1', 'btnMode2', 'btnCapture', 'btnAlarmCancel'].forEach(function (id) {
       $(id).disabled = !connected;
     });
@@ -65,12 +65,28 @@
     toast('已连接：' + e.name, 'success');
     ble.writeLine(protocol.cmdQueryStatus());   // 连上先查一次状态
   });
-  bus.on(EVENTS.BLE_DISCONNECTED, function () {
+  bus.on(EVENTS.BLE_DISCONNECTED, function (e) {
+    var lost = !!(e && e.reason === 'lost');
     setBleUi(false, false, '');
-    store.set('ble', { connected: false, deviceName: '' });
-    toast('已断开连接', 'warning');
+    // 意外掉线时保留设备名，供「重连中」界面继续显示
+    store.set('ble', {
+      connected: false,
+      deviceName: lost ? (store.get().ble.deviceName || '') : ''
+    });
+    toast(lost ? '与盲杖的连接已断开' : '已断开连接', 'warning');
   });
-  bus.on(EVENTS.BLE_CONNECTING, function (e) { setBleUi(false, true, e.name); });
+  bus.on(EVENTS.BLE_CONNECTING, function (e) {
+    // e.name 兼作状态文案：如「正在扫描盲杖…」「重连中（第 n 次）…」
+    var devName = e.reconnecting
+      ? (store.get().ble.deviceName || '盲杖')
+      : (e.name || '');
+    setBleUi(false, true, devName, e.name || '正在连接…');
+    if (e.reconnecting) {
+      log('自动重连：第 ' + e.attempt + ' 次尝试将于 ' +
+          Math.round((e.delayMs || 0) / 1000) + ' 秒后进行');
+      if (e.attempt === 1) toast('正在自动重连盲杖…', 'warning');
+    }
+  });
 
   // ================= 模式切换（原三个模式按钮） =================
   function setMode(idx) {

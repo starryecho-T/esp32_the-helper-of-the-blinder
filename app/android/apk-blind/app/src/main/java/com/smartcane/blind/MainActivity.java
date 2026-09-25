@@ -25,6 +25,7 @@ public class MainActivity extends Activity {
     public static final int REQ_PERMS = 1001;
 
     private WebView web;
+    private BleBridge ble;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -46,7 +47,8 @@ public class MainActivity extends Activity {
         s.setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);
 
         web.setWebViewClient(new WebViewClient());    // 站内跳转不弹系统浏览器
-        web.addJavascriptInterface(new BleBridge(this), "SmartCaneNative");
+        ble = new BleBridge(this);
+        web.addJavascriptInterface(ble, BleBridge.JS_NAME);
         web.setWebChromeClient(new WebChromeClient() {
             @Override
             public void onGeolocationPermissionsShowPrompt(String origin,
@@ -136,6 +138,7 @@ public class MainActivity extends Activity {
 
     @Override
     protected void onDestroy() {
+        if (ble != null) ble.shutdown(); // 停止蓝牙与自动重连（静默，不再回调 JS）
         if (web != null) web.destroy();
         super.onDestroy();
     }
