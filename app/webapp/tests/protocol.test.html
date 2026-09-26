@@ -59,6 +59,10 @@
       eq('事件 MODE:SILENT', P.parseLine('MODE:SILENT').event.mode, 'SILENT');
       eq('事件 MODE:NIGHT', P.parseLine('MODE:NIGHT').event.mode, 'NIGHT');
       eq('事件 CAMERA:CAPTURE', P.parseLine('CAMERA:CAPTURE').event.type, P.EVENT_TYPE.CAMERA_CAPTURE);
+      eq('事件 barrierdetect', P.parseLine('barrierdetect').event.type, P.EVENT_TYPE.BARRIER_DETECT);
+      eq('事件 BARRIERDETECT（大写）', P.parseLine('BARRIERDETECT').event.type, P.EVENT_TYPE.BARRIER_DETECT);
+      eq('事件 BarrierDetect（混合大小写）', P.parseLine('BarrierDetect').event.type, P.EVENT_TYPE.BARRIER_DETECT);
+      eq('事件 BARRIER:DETECT', P.parseLine('BARRIER:DETECT').event.type, P.EVENT_TYPE.BARRIER_DETECT);
       eq('事件 ALARM:MANUAL', P.parseLine('ALARM:MANUAL').event.type, P.EVENT_TYPE.ALARM_MANUAL);
       eq('事件 ALARM:CANCEL', P.parseLine('ALARM:CANCEL').event.type, P.EVENT_TYPE.ALARM_CANCEL);
       eq('事件 FALL:1', P.parseLine('FALL:1').event.type, P.EVENT_TYPE.FALL_DETECTED);
@@ -87,6 +91,8 @@
       eq('指令 ALARM:CANCEL', P.cmdAlarmCancel(), 'ALARM:CANCEL');
       eq('指令 CAMERA:CAPTURE', P.cmdCameraCapture(), 'CAMERA:CAPTURE');
       eq('指令 灯色回传', P.cmdLightResult('GREEN'), 'GREEN');
+      eq('指令 障碍物回传', P.cmdBarrierResult('BARRIER:PED2,VEH1'), 'BARRIER:PED2,VEH1');
+      eq('指令 障碍物回传 缺省', P.cmdBarrierResult(), 'BARRIER:NONE');
       eq('指令 STATUS', P.cmdQueryStatus(), 'STATUS');
 
       // ===== 识别响应解析（trafficlight.js 未在本页加载，此处仅测 protocol 模块）=====

@@ -52,6 +52,9 @@
     // 交通灯识别
     LIGHT_RESULT:       'light:result',       // { color, confidence }
     LIGHT_ERROR:        'light:error',
+    // 障碍物检测
+    BARRIER_RESULT:     'barrier:result',     // { counts, total, objects, summaryZh, cane }
+    BARRIER_ERROR:      'barrier:error',
     // GPS
     GEO_POSITION:       'geo:position',       // { latitude, longitude, accuracy }
     GEO_ERROR:          'geo:error',

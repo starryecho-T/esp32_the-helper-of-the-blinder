@@ -149,6 +149,20 @@ html, body {
 .light-box.green  { background: #e3f7ea; border-color: var(--c-success); }
 .light-box.green .light-color { color: var(--c-success); }
 
+/* ---------- 障碍物检测结果展示 ---------- */
+.barrier-box {
+  text-align: center; padding: 14px 10px;
+  border-radius: var(--radius); border: 3px solid var(--c-border);
+  margin-top: 6px;
+}
+.barrier-box .barrier-summary { font-size: 26px; font-weight: 800; }
+.barrier-box .barrier-counts  { font-size: 17px; color: var(--c-text-sub); margin-top: 6px; }
+.barrier-box .barrier-detail  { font-size: 14px; color: var(--c-text-sub); margin-top: 4px; min-height: 18px; }
+.barrier-box.hit   { background: #fff0e0; border-color: var(--c-warning); }
+.barrier-box.hit .barrier-summary { color: var(--c-warning); }
+.barrier-box.clear { background: #e3f7ea; border-color: var(--c-success); }
+.barrier-box.clear .barrier-summary { color: var(--c-success); }
+
 /* ---------- 家属端地图与画面 ---------- */
 .map-wrap {
   height: 380px; border-radius: var(--radius);

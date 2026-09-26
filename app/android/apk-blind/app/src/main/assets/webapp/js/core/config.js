@@ -44,7 +44,11 @@
       redText: '检测到红灯，请停止前进',
       yellowText: '检测到黄灯，请注意',
       greenText: '检测到绿灯，可以通行',
-      noneText: '未检测到交通灯'
+      noneText: '未检测到交通灯',
+      // —— 障碍物检测播报（barrier.js / blind 端 runBarrierDetect）——
+      barrierPrefix: '前方障碍：',          // 有障碍时前缀 + 摘要 + 后缀
+      barrierSuffix: '，请注意避让',
+      barrierNoneText: '未检测到障碍物'     // 无障碍时整句播报
     }
   };
 

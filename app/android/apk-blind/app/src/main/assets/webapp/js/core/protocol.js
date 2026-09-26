@@ -10,6 +10,7 @@
  *   事件消息：
  *     MODE:NORMAL / MODE:SILENT / MODE:NIGHT
  *     CAMERA:CAPTURE
+ *     barrierdetect / BARRIER:DETECT    障碍物检测请求（大小写不限）
  *     ALARM:MANUAL / ALARM:CANCEL
  *     FALL:1 / FALL:CANCELLED / FALL:CONFIRMED
  *
@@ -18,6 +19,7 @@
  *     ALARM:CANCEL                      远程取消报警
  *     CAMERA:CAPTURE                    触发拍照
  *     RED / YELLOW / GREEN / NONE       交通灯识别结果
+ *     BARRIER:PED2,VEH1 / BARRIER:NONE  障碍物检测结果（行人/车辆/动物/设施数量）
  *     STATUS                            查询状态
  */
 (function (global) {
@@ -34,6 +36,7 @@
   var EVENT_TYPE = {
     MODE_SWITCH:     'mode-switch',      // { type, mode: 'NORMAL'|'SILENT'|'NIGHT' }
     CAMERA_CAPTURE:  'camera-capture',   // { type }
+    BARRIER_DETECT:  'barrier-detect',   // { type } 盲杖请求障碍物检测
     ALARM_MANUAL:    'alarm-manual',     // { type }
     ALARM_CANCEL:    'alarm-cancel',     // { type }
     FALL_DETECTED:   'fall-detected',    // { type }  30s 倒计时开始
@@ -67,6 +70,11 @@
 
   /** 识别事件消息；不是事件返回 null */
   function parseEvent(text) {
+    // —— 障碍物检测请求：固件可能发 barrierdetect / BARRIER:DETECT 等变体（大小写不限）——
+    var up = text.toUpperCase();
+    if (up === 'BARRIERDETECT' || up === 'BARRIER:DETECT' || up === 'BARRIER:REQ') {
+      return { type: EVENT_TYPE.BARRIER_DETECT };
+    }
     switch (text) {
       case 'MODE:NORMAL':  return { type: EVENT_TYPE.MODE_SWITCH, mode: 'NORMAL' };
       case 'MODE:SILENT':  return { type: EVENT_TYPE.MODE_SWITCH, mode: 'SILENT' };
@@ -156,6 +164,7 @@
   function cmdAlarmCancel()   { return 'ALARM:CANCEL'; }
   function cmdCameraCapture() { return 'CAMERA:CAPTURE'; }
   function cmdLightResult(color) { return color; }        // RED / YELLOW / GREEN / NONE
+  function cmdBarrierResult(caneText) { return caneText || 'BARRIER:NONE'; }  // BARRIER:PED2,VEH1
   function cmdQueryStatus()   { return 'STATUS'; }
 
   global.SmartCane = global.SmartCane || {};
@@ -172,6 +181,7 @@
     cmdAlarmCancel: cmdAlarmCancel,
     cmdCameraCapture: cmdCameraCapture,
     cmdLightResult: cmdLightResult,
+    cmdBarrierResult: cmdBarrierResult,
     cmdQueryStatus: cmdQueryStatus
   };
 })(window);

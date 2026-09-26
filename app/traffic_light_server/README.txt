@@ -38,6 +38,33 @@ App 端（新版 .aia）里「摄像头识别」按钮自动调用：
 
 注意：YOLO 使用 COCO 的 traffic light 类别，再根据检测框中的颜色判断红/黄/绿。对于夜间、严重遮挡、远距离或强反光图片，建议后续用你自己的交通灯数据集训练专用模型以提高可靠性。
 
+【GET /barrier】障碍物检测（第二个 YOLO 模型，默认 yolov8s.pt）
+  触发链路：盲杖 BLE 发 barrierdetect → App 调 GET /barrier → 播报并回传 BARRIER:xxx
+  取帧逻辑与 GET /detect 完全相同（设备推送的最新帧 / ?cam= 直连拉取）。
+  返回 JSON：
+  {
+    "ok": true,
+    "model": "yolov8s.pt",
+    "counts": {"PEDESTRIAN": 2, "VEHICLE": 1, "ANIMAL": 0, "FACILITY": 0},
+    "total": 3,
+    "objects": [
+      {"category": "PEDESTRIAN", "label": "person", "conf": 0.92, "box": [x1,y1,x2,y2]},
+      ...（按置信度降序，最多 MAX_BARRIER_OBJECTS 个）
+    ],
+    "summary_zh": "2名行人、1辆车",
+    "cane": "BARRIER:PED2,VEH1"
+  }
+  COCO 80 类 → 4 大类归并：
+    PEDESTRIAN 行人：person
+    VEHICLE    车辆：bicycle/car/motorcycle/airplane/bus/train/truck/boat
+    ANIMAL     动物：bird/cat/dog/horse/sheep/cow/elephant/bear/zebra/giraffe
+    FACILITY   静态设施：fire hydrant/stop sign/parking meter/bench/chair/
+               couch/potted plant/bed/dining table/toilet
+  无障碍时 summary_zh="未检测到障碍物"、cane="BARRIER:NONE"。
+  cane 字段是回传盲杖 ESP32-S3 的紧凑格式（BLE 一行文本）。
+
+【POST /barrier】手机直接上传图片做障碍物识别（body 为图片二进制），返回同上。
+
 【同局域网模式】的网络要求（老的 /detect?cam= 直连方式）：
 只有在这种模式下，服务器才必须能直接访问 ESP32-CAM 的 IP
 （默认 http://192.168.43.248/capture），即手机、ESP32-CAM、服务器需在同一局域网
@@ -80,7 +107,10 @@ App 端（新版 .aia）里「摄像头识别」按钮自动调用：
   定时刷新（Clock 组件 2000ms）即可实现家属端近实时查看。
 
 环境变量（见 traffic-light-server.service）：
-  YOLO_MODEL       模型路径，默认 yolov8n.pt
+  YOLO_MODEL       交通灯模型路径，默认 yolov8n.pt
+  BARRIER_MODEL    障碍物模型路径，默认 yolov8s.pt
+  BARRIER_CONF     障碍物置信度阈值，默认 0.35
+  MAX_BARRIER_OBJECTS 障碍物明细最多返回个数，默认 10
   CAMERA_URL       能直连摄像头时才配；云上部署留空
   DEVICE_TOKEN     上传鉴权 token，建议设为随机字符串
   VIEW_TOKEN       家属端看画面的 token，留空则不校验（不建议）

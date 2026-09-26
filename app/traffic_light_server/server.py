@@ -31,6 +31,42 @@ model = YOLO(MODEL_PATH)
 TRAFFIC_LIGHT_CLASS = 9  # COCO: traffic light
 
 # ---------------------------------------------------------------------------
+# 障碍物检测（第二个 YOLO 模型，yolov8s 比 yolov8n 精度更高）
+#
+# 把 COCO 80 类归并成 App 关心的 4 大类：
+#   PEDESTRIAN 行人 / VEHICLE 车辆 / ANIMAL 动物 / FACILITY 静态设施
+# 交通灯（class 9）不参与障碍物统计，仍走 /detect 专用链路。
+# ---------------------------------------------------------------------------
+BARRIER_MODEL_PATH = os.environ.get('BARRIER_MODEL', 'yolov8s.pt')
+BARRIER_CONF = float(os.environ.get('BARRIER_CONF', '0.35'))   # 障碍物置信度阈值
+MAX_BARRIER_OBJECTS = int(os.environ.get('MAX_BARRIER_OBJECTS', '10'))  # 明细最多返回几个
+barrier_model = YOLO(BARRIER_MODEL_PATH)
+
+CATEGORY_ORDER = ['PEDESTRIAN', 'VEHICLE', 'ANIMAL', 'FACILITY']
+CATEGORY_GROUPS = {
+    # person
+    'PEDESTRIAN': {0},
+    # bicycle car motorcycle airplane bus train truck boat
+    'VEHICLE': {1, 2, 3, 4, 5, 6, 7, 8},
+    # bird cat dog horse sheep cow elephant bear zebra giraffe
+    'ANIMAL': {14, 15, 16, 17, 18, 19, 20, 21, 22, 23},
+    # fire hydrant stop sign parking meter bench chair couch potted plant bed dining table toilet
+    'FACILITY': {10, 11, 12, 13, 56, 57, 58, 59, 60, 61},
+}
+CLASS_TO_CATEGORY = {
+    cls_id: cat for cat, ids in CATEGORY_GROUPS.items() for cls_id in ids
+}
+CATEGORY_ZH = {
+    'PEDESTRIAN': '行人', 'VEHICLE': '车辆', 'ANIMAL': '动物', 'FACILITY': '静态设施',
+}
+CATEGORY_UNIT = {
+    'PEDESTRIAN': '名', 'VEHICLE': '辆', 'ANIMAL': '只', 'FACILITY': '处',
+}
+CATEGORY_SHORT = {
+    'PEDESTRIAN': 'PED', 'VEHICLE': 'VEH', 'ANIMAL': 'ANI', 'FACILITY': 'FAC',
+}
+
+# ---------------------------------------------------------------------------
 # 帧获取方式
 #
 # 部署到云服务器后，ESP32-CAM 在家/校园内网里，服务器无法反向访问它。
@@ -152,6 +188,77 @@ def detect_from_bytes(data: bytes) -> str:
     return f'{color}|{det_conf * 100:.0f}%'
 
 
+def summarize_barrier(objects_all: list) -> dict:
+    """根据全部检测结果生成 4 大类计数、中文摘要与回传盲杖的紧凑格式。"""
+    counts = {c: 0 for c in CATEGORY_ORDER}
+    for o in objects_all:
+        counts[o['category']] += 1
+
+    present = [c for c in CATEGORY_ORDER if counts[c] > 0]
+    if not present:
+        summary_zh = '未检测到障碍物'
+        cane = 'BARRIER:NONE'
+    else:
+        summary_zh = '、'.join(
+            f'{counts[c]}{CATEGORY_UNIT[c]}{CATEGORY_ZH[c]}' for c in present)
+        cane = 'BARRIER:' + ','.join(
+            f'{CATEGORY_SHORT[c]}{counts[c]}' for c in present)
+    return {
+        'ok': True,
+        'model': BARRIER_MODEL_PATH,
+        'counts': counts,
+        'total': sum(counts.values()),
+        'objects': objects_all[:MAX_BARRIER_OBJECTS],   # 明细截断，计数保留全量
+        'summary_zh': summary_zh,
+        'cane': cane,
+    }
+
+
+def detect_barrier_from_bytes(data: bytes) -> dict:
+    """Run the obstacle pipeline on raw image bytes and return a JSON dict.
+
+    与 /detect（交通灯，纯文本 COLOR|NN%）不同，这里返回结构化 JSON：
+      counts      4 大类计数 {PEDESTRIAN, VEHICLE, ANIMAL, FACILITY}
+      objects     明细（label 为 COCO 原始英文类名，conf 置信度，box 像素坐标）
+      summary_zh  中文摘要（可直接 TTS 播报）
+      cane        回传盲杖的紧凑格式，如 BARRIER:PED2,VEH1 / BARRIER:NONE
+    """
+    if not data:
+        raise HTTPException(status_code=400, detail='empty image')
+
+    arr = np.frombuffer(data, dtype=np.uint8)
+    image = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+    if image is None:
+        raise HTTPException(status_code=400, detail='invalid image')
+
+    results = barrier_model.predict(image, verbose=False, conf=BARRIER_CONF)
+
+    objects_all = []
+    for result in results:
+        boxes = result.boxes
+        if boxes is None or len(boxes) == 0:
+            continue
+        xyxy = boxes.xyxy.cpu().numpy()   # (n, 4)
+        confs = boxes.conf.cpu().numpy()  # (n,)
+        clss = boxes.cls.cpu().numpy()    # (n,)
+
+        for i in range(len(xyxy)):
+            cls_id = int(clss[i])
+            category = CLASS_TO_CATEGORY.get(cls_id)
+            if category is None:
+                continue   # 与障碍物无关的类别（含 traffic light）
+            x1, y1, x2, y2 = xyxy[i].tolist()
+            objects_all.append({
+                'category': category,
+                'label': str(barrier_model.names.get(cls_id, cls_id)),
+                'conf': round(float(confs[i]), 3),
+                'box': [round(x1), round(y1), round(x2), round(y2)],
+            })
+
+    objects_all.sort(key=lambda o: o['conf'], reverse=True)
+    return summarize_barrier(objects_all)
+
+
 @app.get('/health', response_class=PlainTextResponse)
 def health():
     return 'OK'
@@ -165,7 +272,8 @@ def status():
         state = f'no-frame age={age if age else "n/a"}'
     else:
         state = f'frame bytes={len(data)} age={age:.1f}s'
-    return f'OK {state} model={MODEL_PATH}'
+    return (f'OK {state} light_model={MODEL_PATH} '
+            f'barrier_model={BARRIER_MODEL_PATH} barrier_conf={BARRIER_CONF}')
 
 
 @app.post('/upload', response_class=PlainTextResponse)
@@ -223,6 +331,38 @@ async def detect(request: Request):
     """手机直接上传图片做识别（不经过摄像头缓存）。"""
     data = await request.body()
     return detect_from_bytes(data)
+
+
+@app.get('/barrier')
+def barrier_from_camera(cam: str = ''):
+    """GET /barrier —— 障碍物检测（第二个 YOLO 模型 yolov8s.pt）
+
+    与 GET /detect 同样的取帧逻辑：
+    默认使用 ESP32-CAM 推送上来的最新一帧；
+    显式传 ?cam=<snapshot-url> 且服务器能直连时临时去拉一张。
+    返回 JSON（见 detect_barrier_from_bytes）。
+    """
+    if cam:
+        try:
+            r = requests.get(cam, timeout=CAMERA_TIMEOUT)
+            r.raise_for_status()
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f'camera unreachable: {exc}')
+        return detect_barrier_from_bytes(r.content)
+
+    data, age = cached_frame()
+    if data is None:
+        raise HTTPException(
+            status_code=503,
+            detail=f'no fresh frame from device (age={age if age else "n/a"})')
+    return detect_barrier_from_bytes(data)
+
+
+@app.post('/barrier')
+async def barrier(request: Request):
+    """POST /barrier —— 手机直接上传图片做障碍物识别（不经过摄像头缓存）。"""
+    data = await request.body()
+    return detect_barrier_from_bytes(data)
 
 
 @app.get('/snapshot')

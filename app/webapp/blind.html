@@ -74,6 +74,17 @@
       <button class="btn" id="btnCapture" disabled>手动识别一次</button>
     </section>
 
+    <!-- ===== 障碍物检测 ===== -->
+    <section class="card" aria-label="障碍物检测">
+      <h2>障碍物检测</h2>
+      <div class="barrier-box" id="barrierBox">
+        <div class="barrier-summary" id="barrierSummary" aria-live="assertive">等待检测</div>
+        <div class="barrier-counts" id="barrierCounts">行人 0　车辆 0　动物 0　静态设施 0</div>
+        <div class="barrier-detail" id="barrierDetail">--</div>
+      </div>
+      <button class="btn" id="btnBarrier" disabled>手动检测一次</button>
+    </section>
+
     <!-- ===== 位置与上传 ===== -->
     <section class="card" aria-label="位置上报">
       <h2>位置上报</h2>
@@ -113,6 +124,7 @@
   <script src="js/services/ble.js"></script>
   <script src="js/services/firebase.js"></script>
   <script src="js/services/trafficlight.js"></script>
+  <script src="js/services/barrier.js"></script>
   <script src="js/services/coords.js"></script>
   <script src="js/services/geo.js"></script>
   <script src="js/services/tts.js"></script>

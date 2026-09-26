@@ -6,6 +6,7 @@
  *  - 周期状态解析显示（模式/电量/报警/障碍/距离）
  *  - 模式切换（MODE:0/1/2）
  *  - 交通灯识别闭环（CAMERA:CAPTURE → /detect → 播报 → 回传色值）
+ *  - 障碍物检测闭环（barrierdetect → /barrier → 播报 → 回传 BARRIER:xxx）
  *  - 报警联动（ALARM:MANUAL/CANCEL、FALL:CONFIRMED/CANCELLED → Firebase SOS + 上传 GPS）
  *  - GPS 定时上传（10s）+ 事件即时上传
  */
@@ -14,7 +15,8 @@
 
   var S = global.SmartCane;
   var bus = S.bus, EVENTS = S.EVENTS, store = S.store, protocol = S.protocol;
-  var ble = S.ble, fb = S.firebase, light = S.trafficLight, geo = S.geo, tts = S.tts, coords = S.coords;
+  var ble = S.ble, fb = S.firebase, light = S.trafficLight, barrier = S.barrier,
+      geo = S.geo, tts = S.tts, coords = S.coords;
   var cfg = S.config;
 
   var $ = function (id) { return document.getElementById(id); };
@@ -46,7 +48,7 @@
     $('bleDevice').className = 'value ' + (connected ? '' : 'muted');
     $('btnConnect').disabled = connected || connecting;
     $('btnDisconnect').disabled = !connected && !connecting; // 连接中/重连中也可手动取消
-    ['btnMode0', 'btnMode1', 'btnMode2', 'btnCapture', 'btnAlarmCancel'].forEach(function (id) {
+    ['btnMode0', 'btnMode1', 'btnMode2', 'btnCapture', 'btnBarrier', 'btnAlarmCancel'].forEach(function (id) {
       $(id).disabled = !connected;
     });
   }
@@ -137,6 +139,7 @@
     bus.emit(EVENTS.CANE_EVENT, evt);
     switch (evt.type) {
       case protocol.EVENT_TYPE.CAMERA_CAPTURE: runDetect(); break;
+      case protocol.EVENT_TYPE.BARRIER_DETECT: runBarrierDetect(); break;
       case protocol.EVENT_TYPE.MODE_SWITCH: showMode(evt.mode); break;
       case protocol.EVENT_TYPE.ALARM_MANUAL: sosReport(true, '收到主动报警，当前位置已上传'); break;
       case protocol.EVENT_TYPE.ALARM_CANCEL: sosClear('报警已解除，已恢复正常状态'); break;
@@ -197,6 +200,45 @@
     $('lightBox').className = 'light-box ' + (LIGHT_BOX_CLS[r.color] || '');
   }
   $('btnCapture').addEventListener('click', runDetect);
+
+  // ================= 障碍物检测闭环 =================
+  // 触发：盲杖 BLE 发 barrierdetect（protocol 解析为 BARRIER_DETECT 事件）或点「手动检测」。
+  // 流程：GET /barrier → 云端 yolov8s 归并 4 大类 → 播报中文摘要
+  //       → BLE 回传 cane 串（BARRIER:PED2,VEH1 / BARRIER:NONE）给盲杖。
+  function runBarrierDetect() {
+    $('barrierSummary').textContent = '正在检测……';
+    $('barrierDetail').textContent = '';
+    barrier.detect().then(function (r) {
+      showBarrier(r);
+      var t = cfg.get().tts;
+      var voice = r.total > 0
+        ? (t.barrierPrefix + r.summaryZh + t.barrierSuffix)
+        : t.barrierNoneText;
+      bus.emit(EVENTS.VOICE, { message: voice });
+      tts.speak(voice, { force: true });
+      if (ble.isConnected()) ble.writeLine(protocol.cmdBarrierResult(r.cane));  // 回传盲杖
+      log('障碍物 ' + r.summaryZh + ' → 已播报/回传 ' + r.cane);
+    }).catch(function (err) {
+      $('barrierSummary').textContent = '检测失败';
+      $('barrierDetail').textContent = String(err.message).slice(0, 60);
+      toast('障碍物检测失败：' + err.message, 'danger');
+    });
+  }
+  function showBarrier(r) {
+    $('barrierSummary').textContent = r.total > 0 ? r.summaryZh : '未检测到障碍物';
+    var counts = [];
+    barrier.CATEGORY_ORDER.forEach(function (c) {
+      counts.push(barrier.CATEGORY_CN[c] + ' ' + (r.counts[c] || 0));
+    });
+    $('barrierCounts').textContent = counts.join('　');
+    var detail = r.objects.slice(0, 5).map(function (o) {
+      return (barrier.CATEGORY_CN[o.category] || o.category) +
+             '(' + o.label + ' ' + Math.round((o.conf || 0) * 100) + '%)';
+    }).join('、');
+    $('barrierDetail').textContent = detail || '--';
+    $('barrierBox').className = 'barrier-box ' + (r.total > 0 ? 'hit' : 'clear');
+  }
+  $('btnBarrier').addEventListener('click', runBarrierDetect);
 
   // ================= GPS（原 LocationSensor + gps计时器） =================
   bus.on(EVENTS.GEO_POSITION, function (p) {
