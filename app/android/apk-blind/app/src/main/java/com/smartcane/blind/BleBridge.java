@@ -154,6 +154,12 @@ public class BleBridge {
     // ------------------------------------------------------------------
 
     private void startScan() {
+        // UUID 来自 webapp 配置，非法时后续 getService/fromString 会在主线程抛
+        // IllegalArgumentException 直接闪退，这里提前拦下并给出可读提示
+        if (!uuidOk(serviceUuid) || !uuidOk(rxUuid) || !uuidOk(txUuid)) {
+            giveUp("蓝牙 UUID 配置无效，请到配置页检查后重试");
+            return;
+        }
         if (!hasBlePermissions()) {
             giveUp("缺少蓝牙/定位权限，请到系统设置中授予后重试");
             return;
@@ -200,8 +206,10 @@ public class BleBridge {
             if (!scanning) return;
             BluetoothDevice dev = result.getDevice();
             String name = safeName(dev);
+            // 注意：周围常有无广播名的 BLE 设备（耳机/手环/信标），getName() 会合法地返回
+            // null（safeName 只拦 SecurityException），判空前缀必须空安全，否则 NPE 直接闪退
             boolean byName = namePrefix.isEmpty()
-                    || name.toLowerCase().startsWith(namePrefix.toLowerCase());
+                    || (name != null && name.toLowerCase().startsWith(namePrefix.toLowerCase()));
             boolean byUuid = false;
             if (!byName && serviceUuid != null) {
                 ScanRecord rec = result.getScanRecord();
@@ -358,12 +366,26 @@ public class BleBridge {
             pumpWrite();
         }
 
-        @Override
-        public void onCharacteristicChanged(BluetoothGatt g, BluetoothGattCharacteristic c, byte[] value) {
-            // API 33 起有新签名，旧签名仍会回调到此处；此处只关心 TX 通知
-            if (c == null || c.getUuid() == null || !c.getUuid().toString().equals(txUuid)) return;
+        /** 统一的 TX 通知处理（新旧两个签名共用；行拆分在 JS 侧 protocol.splitLines 完成） */
+        private void handleNotify(BluetoothGattCharacteristic c, byte[] value) {
+            if (c == null || c.getUuid() == null || txUuid == null
+                    || !c.getUuid().toString().equals(txUuid)) return;
             String text = new String(value == null ? new byte[0] : value, StandardCharsets.UTF_8);
             emit("window.__nativeBle&&window.__nativeBle.onLine&&window.__nativeBle.onLine(" + quote(text) + ")");
+        }
+
+        @Override
+        public void onCharacteristicChanged(BluetoothGatt g, BluetoothGattCharacteristic c, byte[] value) {
+            // API 33+ 走此签名（本机一加 Android 16 即此路径）
+            handleNotify(c, value);
+        }
+
+        @SuppressWarnings("deprecation")
+        @Override
+        public void onCharacteristicChanged(BluetoothGatt g, BluetoothGattCharacteristic c) {
+            // API 32 及以下走旧签名（不带 value 参数），数据从特征里取；
+            // 不补这个重写在旧系统上会「连得上但收不到任何数据」
+            handleNotify(c, c == null ? null : c.getValue());
         }
     };
 
@@ -522,6 +544,17 @@ public class BleBridge {
 
     private static String lower(String s) {
         return s == null ? null : s.trim().toLowerCase();
+    }
+
+    /** UUID 合法性校验（空串 / 非法格式均返回 false） */
+    private static boolean uuidOk(String s) {
+        if (s == null || s.isEmpty()) return false;
+        try {
+            UUID.fromString(s);
+            return true;
+        } catch (IllegalArgumentException e) {
+            return false;
+        }
     }
 
     /** JSON 字符串转义（org.json 自带，保证换行/引号安全注入 JS） */
