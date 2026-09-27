@@ -278,6 +278,19 @@
   $('btnLightYellow').addEventListener('click', function () { sendManualLight('YELLOW'); });
   $('btnLightGreen').addEventListener('click', function () { sendManualLight('GREEN'); });
 
+  // 「测试语音」：手动校验手机 TTS。点击是用户手势，同时完成移动端语音解锁
+  // （iOS Safari / 微信内置浏览器不解锁时，蓝牙事件触发的后台播报会无声）。
+  $('btnVoiceTest').addEventListener('click', function () {
+    if (tts.unlock) tts.unlock();
+    if (!tts.isSupported()) {
+      toast('此浏览器不支持语音合成，建议改用 Chrome / Safari 打开', 'danger');
+      return;
+    }
+    tts.speak('语音功能正常，手机将代读盲杖播报', { force: true });
+    log('手动语音测试已播放');
+    toast('已播放测试语音，若无声请调大媒体音量后重试', 'info');
+  });
+
   // ================= 障碍物检测闭环 =================
   // 触发：盲杖 BLE 发 barrierdetect（protocol 解析为 BARRIER_DETECT 事件）或点「手动检测」。
   // 流程：GET /barrier → 云端 yolov8s 归并 4 大类 → 播报中文摘要
@@ -356,6 +369,9 @@
     }
     geo.start();
     setInterval(uploadGpsNow, cfg.get().intervals.gpsUploadMs);   // 原 gps计时器 10s
+    // 首次任意触摸/点击即解锁语音合成（幂等）：保证之后蓝牙事件触发的播报能出声
+    document.addEventListener('touchend', function () { tts.unlock(); }, { once: true, passive: true });
+    document.addEventListener('click', function () { tts.unlock(); }, { once: true });
     log('盲人端就绪 v1.0（WebApp 重构版）');
   }
   document.addEventListener('DOMContentLoaded', init);
