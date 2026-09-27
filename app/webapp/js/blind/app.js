@@ -9,6 +9,8 @@
  *  - 障碍物检测闭环（barrierdetect → /barrier → 播报 → 回传 BARRIER:xxx）
  *  - 报警联动（ALARM:MANUAL/CANCEL、FALL:CONFIRMED/CANCELLED → Firebase SOS + 上传 GPS）
  *  - GPS 定时上传（10s）+ 事件即时上传
+ *  - 手机代读语音（纯软件，无需改固件）：盲杖语音模块异常时，
+ *    依据 MODE/FALL/ALARM/BATT 事件用手机 TTS 朗读原播报文案
  */
 (function (global) {
   'use strict';
@@ -21,6 +23,8 @@
 
   var $ = function (id) { return document.getElementById(id); };
   var MODE_TEXT = { NORMAL: '日常模式', SILENT: '安静模式', NIGHT: '夜间模式' };
+  // 手机代读语音文案（与盲杖原 SYN6288 播报一致）
+  var MODE_VOICE = { NORMAL: '正常模式', SILENT: '安静模式', NIGHT: '夜间模式' };
   var ALARM_TEXT = { NORMAL: '正常', MANUAL: '主动报警', FALL: '跌倒报警' };
   var TYPE_TEXT = { SAFE: '安全', LARGE: '大型障碍', LOW: '低位障碍', HIGH: '悬空障碍' };
 
@@ -39,6 +43,24 @@
     v.textContent = '[' + t + '] ' + msg + '\n' + v.textContent;
   }
   bus.on(EVENTS.NOTIFY, function (n) { toast(n.message, n.type); });
+
+  // ================= 手机代读语音（纯软件方案，无需改固件） =================
+  // 盲杖 SYN6288 语音模块异常时，由手机 TTS 代读：盲杖本就会把 MODE:xxx /
+  // FALL:1 / ALARM:MANUAL 事件和状态包 BATT 字段发过来，据此触发朗读即可。
+  // 同一句 3 秒内只播一次：防 FALL:1 每 3 秒重发等造成的重复朗读，
+  // 也兼容将来固件改发 SAY:<文本>（两路同文本会被去重合并，不双播）。
+  var lastSpokenAt = {};
+  var lowBattAnnounced = false;   // 低电量语音一次性标志（与固件逻辑一致）
+  var fallVoicePlayed = false;    // 一次跌倒只播一遍（FALL:1 会每 3 秒重发）
+  function announce(text) {
+    if (!text) return;
+    var now = Date.now();
+    if (lastSpokenAt[text] && now - lastSpokenAt[text] < 3000) return;
+    lastSpokenAt[text] = now;
+    bus.emit(EVENTS.VOICE, { message: text });
+    tts.speak(text, { force: true });
+    log('语音播报：' + text);
+  }
 
   // ================= BLE 连接区 =================
   function setBleUi(connected, connecting, name, statusText) {
@@ -96,6 +118,7 @@
     if (!ble.isConnected()) { toast('请先连接智能盲杖', 'warning'); return; }
     ble.writeLine(protocol.cmdSetMode(idx));
     showMode(protocol.MODE_BY_INDEX[idx]);
+    announce(MODE_VOICE[protocol.MODE_BY_INDEX[idx]]);   // 手机代读（旋钮切换走 MODE: 事件，去重防双播）
     toast('已发送：' + MODE_TEXT[protocol.MODE_BY_INDEX[idx]], 'info');
   }
   function showMode(mode) {
@@ -124,6 +147,12 @@
       var b = $('caneBatt');
       b.textContent = s.batt + '%';
       b.className = 'value ' + (s.batt > 20 ? 'ok' : 'danger');
+      // 低电量语音（手机代读）：阈值与一次性播报逻辑和固件一致（<20 播一次，恢复重置）
+      if (s.batt >= 0 && s.batt < 20) {
+        if (!lowBattAnnounced) { lowBattAnnounced = true; announce('电池电量低'); }
+      } else {
+        lowBattAnnounced = false;
+      }
     }
     if (s.alarm) {
       var a = $('caneAlarm');
@@ -144,14 +173,36 @@
   function onCaneEvent(evt) {
     bus.emit(EVENTS.CANE_EVENT, evt);
     switch (evt.type) {
+      case protocol.EVENT_TYPE.TTS_SPEAK:          // 预留：将来固件改发 SAY:<文本> 时自动生效
+        announce(evt.text);
+        break;
       case protocol.EVENT_TYPE.CAMERA_CAPTURE: runDetect(); break;
       case protocol.EVENT_TYPE.BARRIER_DETECT: runBarrierDetect(); break;
-      case protocol.EVENT_TYPE.MODE_SWITCH: showMode(evt.mode); break;
-      case protocol.EVENT_TYPE.ALARM_MANUAL: sosReport(true, '收到主动报警，当前位置已上传'); break;
+      case protocol.EVENT_TYPE.MODE_SWITCH:
+        showMode(evt.mode);
+        announce(MODE_VOICE[evt.mode]);            // 手机代读原 SYN6288 的模式播报
+        break;
+      case protocol.EVENT_TYPE.ALARM_MANUAL:
+        announce('已报警');
+        sosReport(true, '收到主动报警，当前位置已上传');
+        break;
       case protocol.EVENT_TYPE.ALARM_CANCEL: sosClear('报警已解除，已恢复正常状态'); break;
-      case protocol.EVENT_TYPE.FALL_CONFIRMED: sosReport(true, '用户跌倒，当前位置已上传'); break;
-      case protocol.EVENT_TYPE.FALL_CANCELLED: sosClear('跌倒报警已解除'); break;
-      case protocol.EVENT_TYPE.FALL_DETECTED: log('收到 FALL:1（30 秒倒计时，端上可取消）'); break;
+      case protocol.EVENT_TYPE.FALL_CONFIRMED:
+        fallVoicePlayed = false;
+        announce('已报警');
+        sosReport(true, '用户跌倒，当前位置已上传');
+        break;
+      case protocol.EVENT_TYPE.FALL_CANCELLED:
+        fallVoicePlayed = false;
+        sosClear('跌倒报警已解除');
+        break;
+      case protocol.EVENT_TYPE.FALL_DETECTED:
+        if (!fallVoicePlayed) {                    // FALL:1 每 3 秒重发，一次跌倒只播一遍
+          fallVoicePlayed = true;
+          announce('您似乎跌倒了，三十秒后自动报警，拨动旋钮取消');
+        }
+        log('收到 FALL:1（30 秒倒计时，端上可取消）');
+        break;
     }
   }
 

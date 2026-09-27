@@ -8,6 +8,7 @@
  *     DIST:85,HIGH:120,TYPE:LARGE,LEVEL:1,MODE:0,BATT:85,ALARM:NORMAL,
  *     FALLST:0,ENC:42,ACC:1.02,MPU:1,LAT:30.123,LNG:120.654,LIGHT:无
  *   事件消息：
+ *     SAY:<文本>                       盲杖请求手机代读的语音（原 SYN6288 播报改走手机 TTS）
  *     MODE:NORMAL / MODE:SILENT / MODE:NIGHT
  *     CAMERA:CAPTURE
  *     barrierdetect / BARRIER:DETECT    障碍物检测请求（大小写不限）
@@ -34,6 +35,7 @@
 
   /** 事件类型（cane:event 载荷里的 type 字段） */
   var EVENT_TYPE = {
+    TTS_SPEAK:       'tts-speak',        // { type, text } 盲杖请求手机代读语音（SAY:xxx）
     MODE_SWITCH:     'mode-switch',      // { type, mode: 'NORMAL'|'SILENT'|'NIGHT' }
     CAMERA_CAPTURE:  'camera-capture',   // { type }
     BARRIER_DETECT:  'barrier-detect',   // { type } 盲杖请求障碍物检测
@@ -77,6 +79,10 @@
     var up = text.toUpperCase();
     if (up === 'BARRIERDETECT' || up === 'BARRIER:DETECT' || up === 'BARRIER:REQ') {
       return { type: EVENT_TYPE.BARRIER_DETECT };
+    }
+    // —— 手机代读语音：SAY:<文本>（盲杖原 SYN6288 播报，现改走手机 TTS）——
+    if (/^SAY:/i.test(text)) {
+      return { type: EVENT_TYPE.TTS_SPEAK, text: text.slice(4) };
     }
     switch (text) {
       case 'MODE:NORMAL':  return { type: EVENT_TYPE.MODE_SWITCH, mode: 'NORMAL' };
