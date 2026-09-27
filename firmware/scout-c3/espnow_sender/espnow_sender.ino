@@ -4,7 +4,10 @@
  * 功能：
  *   1. 超声波高位测距 → ESP-NOW 发给盲杖
  *   2. 接收盲杖拍照命令 → 拍照 → WiFi 传给手机
- *   3. 摄像头 Web Server（手机可直接访问 /capture 拍照）
+ *   3. 摄像头 Web Server（手机可直接访问 /capture 拍照、/stream 实时）
+ *   4. 主动推流到云端：每 1.2s POST 一帧 JPEG 到云服务器 /upload，
+ *      云端缓存最新帧，手机 App 再调 GET /detect 识别（物体+交通灯）
+ *   5. mDNS：手机可访问 http://scout.local/capture
  *
  * 接线：
  *   HC-SR04:  Trig→GPIO1, Echo→GPIO14, VCC→5V, GND→GND
@@ -24,7 +27,10 @@
 #include <esp_now.h>
 #include <esp_wifi.h>
 #include <WiFi.h>
+#include <WiFiClient.h>
+#include <HTTPClient.h>
 #include <esp_camera.h>
+#include <ESPmDNS.h>
 #include "esp_http_server.h"
 #include "camera_pins.h"
 
@@ -38,6 +44,11 @@ uint8_t caneMac[] = {0x94, 0xA9, 0x90, 0xCA, 0xAE, 0x64};
 // ====================== WiFi ======================
 const char* ssid = "starry";       // 改成你的 WiFi
 const char* password = "iloveyouso";  // 改成你的 WiFi 密码
+
+// ====================== 云端推流配置 ======================
+const char* SERVER_HOST  = "http://39.106.216.80:8000";
+const char* DEVICE_TOKEN = "YFOpzRWJxw6G2dl4jkNUMX7h";   // 与服务器一致
+const unsigned long UPLOAD_INTERVAL_MS = 2000;           // 每2秒推一帧（云端始终有最新帧）
 
 // ====================== 数据结构 ======================
 // 前哨 → 盲杖：高位距离
@@ -122,7 +133,7 @@ bool cameraInit() {
   config.pin_sscb_scl = SIOC_GPIO_NUM;
   config.pin_pwdn = PWDN_GPIO_NUM;
   config.pin_reset = RESET_GPIO_NUM;
-  config.xclk_freq_hz = 20000000;
+  config.xclk_freq_hz = 10000000;   // 10MHz 防过热（原20MHz导致发烫、拍照失败）
   config.frame_size = FRAMESIZE_QVGA;
   config.pixel_format = PIXFORMAT_JPEG;
   config.grab_mode = CAMERA_GRAB_LATEST;
@@ -134,7 +145,7 @@ bool cameraInit() {
     config.jpeg_quality = 10;
     config.fb_count = 2;
   } else {
-    config.frame_size = FRAMESIZE_SVGA;
+    config.frame_size = FRAMESIZE_QVGA;   // 无PSRAM也用QVGA（SVGA太烫）
     config.fb_location = CAMERA_FB_IN_DRAM;
     config.fb_count = 1;
   }
@@ -230,16 +241,58 @@ void startCameraServer() {
     .user_ctx = NULL
   };
 
+  httpd_uri_t root_uri = {
+    .uri = "/",
+    .method = HTTP_GET,
+    .handler = [](httpd_req_t *req) -> esp_err_t {
+      const char* html = "<html><body><h3>Scout-CAM</h3>"
+                         "<p><a href='/capture'>/capture</a> - 拍照</p>"
+                         "<p><a href='/stream'>/stream</a> - 实时视频</p></body></html>";
+      httpd_resp_set_type(req, "text/html");
+      return httpd_resp_send(req, html, strlen(html));
+    },
+    .user_ctx = NULL
+  };
+
   if (httpd_start(&server, &config) == ESP_OK) {
+    httpd_register_uri_handler(server, &root_uri);
     httpd_register_uri_handler(server, &capture_uri);
     httpd_register_uri_handler(server, &stream_uri);
-    Serial.println("Web 服务器启动: /capture (拍照) /stream (实时)");
+    Serial.println("Web 服务器启动: / /capture /stream");
   }
 }
 
+// ====================== 云端推流 ======================
+// 主动 POST 一帧 JPEG 到云服务器 /upload，云端缓存最新帧供 App GET /detect 识别
+bool uploadFrame() {
+  if (WiFi.status() != WL_CONNECTED) return false;
+  camera_fb_t* fb = esp_camera_fb_get();
+  if (!fb) { Serial.println("[upload] fb get failed"); return false; }
+
+  char url[160];
+  snprintf(url, sizeof(url), "%s/upload?token=%s", SERVER_HOST, DEVICE_TOKEN);
+
+  HTTPClient http;
+  http.begin(url);
+  http.addHeader("Content-Type", "image/jpeg");
+  http.setTimeout(5000);
+
+  int code = http.POST(fb->buf, fb->len);
+  http.end();
+  esp_camera_fb_return(fb);
+
+  if (code == 200) {
+    Serial.printf("[upload] %u bytes OK\n", fb->len);
+  } else {
+    Serial.printf("[upload] HTTP %d\n", code);
+  }
+  return code == 200;
+}
+
 // ====================== ESP-NOW ======================
-// 盲杖→前哨：拍照命令。前哨本身不主动上传照片，照片由手机通过 /capture 拉取。
-// 这里收到命令后预热摄像头（取一帧即归还），让下次 /capture 响应更快。
+// 盲杖→前哨：拍照命令（盲杖长按旋钮 1.5 秒触发）。
+// 收到后预热摄像头（取一帧即归还），让下次 /capture 响应更快。
+// 推流由主循环每 2 秒自动执行，云端始终有最新帧，不在这里推（避免阻塞回调）。
 void OnDataRecv(const esp_now_recv_info_t *info, const uint8_t *data, int len) {
   memcpy(&recvCmd, data, sizeof(recvCmd));
   if (recvCmd.cmd == 1) {
@@ -289,7 +342,13 @@ void setup() {
 
   // 启动 HTTP 服务器（手机访问 http://<前哨IP>/capture 拉照片）
   startCameraServer();
-  Serial.println("  [HTTP]     /capture(拍照) /stream(实时) 就绪");
+  Serial.println("  [HTTP]     / /capture(拍照) /stream(实时) 就绪");
+
+  // mDNS：手机可用 http://scout.local/capture 访问，不用记 IP
+  if (MDNS.begin("scout")) {
+    MDNS.addService("http", "tcp", 80);
+    Serial.println("  [mDNS]     http://scout.local/capture ✓");
+  }
 
   // ESP-NOW（和盲杖通信）。用 WiFi 实际信道，与盲杖对齐
   if (esp_now_init() == ESP_OK) {
@@ -306,7 +365,8 @@ void setup() {
   }
 
   Serial.println("==============================================");
-  Serial.println("初始化完成。手机访问 http://" + WiFi.localIP().toString() + "/capture 拍照");
+  Serial.println("初始化完成。手机访问 http://scout.local/capture 或 http://" + WiFi.localIP().toString() + "/capture 拍照");
+  Serial.println("每1.2秒自动推流到云端 " + String(SERVER_HOST));
   Serial.println("串口输入 'dist' 可诊断超声波");
 }
 
@@ -325,6 +385,17 @@ void handleSerial() {
 // ====================== 主循环 ======================
 void loop() {
   handleSerial();
+
+  // WiFi 掉线自动重连
+  if (WiFi.status() != WL_CONNECTED) {
+    static unsigned long lastReconn = 0;
+    if (millis() - lastReconn > 5000) {
+      lastReconn = millis();
+      Serial.println("[WiFi] 掉线，重连中...");
+      WiFi.begin(ssid, password);
+    }
+  }
+
   // 每 500ms 测高位距离，ESP-NOW 发给盲杖
   static unsigned long lastSend = 0;
   static int lastLevel = -1;
@@ -340,5 +411,12 @@ void loop() {
     }
 
     esp_now_send(caneMac, (uint8_t *)&sendData, sizeof(sendData));
+  }
+
+  // 每 2 秒推流一帧到云端（云端始终有最新帧，App 收到 barrierdetect 后调 /detect 即可识别）
+  static unsigned long lastUpload = 0;
+  if (WiFi.status() == WL_CONNECTED && millis() - lastUpload >= UPLOAD_INTERVAL_MS) {
+    lastUpload = millis();
+    uploadFrame();
   }
 }

@@ -72,7 +72,7 @@ const char* password = "iloveyouso";
 #define GPS_RX_PIN 15   // GPS TX → ESP32 RX（注意：原 gps_test 用 GPIO14，与 TTS 冲突，已改到 15）
 #define GPS_TX_PIN 16   // ESP32 TX → GPS RX（一般不用）
 #define WS2811_PIN 17   // WS2811 灯带数据引脚
-#define WS2811_COUNT 5  // 灯珠数量（根据实际灯带改）
+#define WS2811_COUNT 20  // 灯珠数量（根据实际灯带改）
 
 // ====================== 前哨 MAC ======================
 uint8_t scoutMac[] = {0x28, 0x84, 0x85, 0x4B, 0xAB, 0xBC};
@@ -106,6 +106,14 @@ const char* modeNames[] = {"正常", "安静", "夜间"};
 int trafficLight = 0;   // 0=NONE 1=RED 2=YELLOW 3=GREEN
 const char* lightNames[] = {"无", "红灯", "黄灯", "绿灯"};
 
+// 高位物体识别（App 经 BLE 中转云端 YOLO 结果）
+// 盲杖定期发 barrierdetect 请求，App 返回 BARRIER:PED2,VEH1 或 BARRIER:NONE
+int barrierPed = 0, barrierVeh = 0, barrierAni = 0, barrierFac = 0;  // 各类目标数量
+unsigned long lastBarrierReq = 0;    // 上次发检测请求的时刻
+unsigned long lastBarrierResp = 0;    // 上次收到结果的时刻
+#define BARRIER_REQ_INTERVAL 4000     // 每4秒发一次请求（云端推理要1~5秒）
+#define BARRIER_REQ_TIMEOUT  12000    // 12秒没回应视为超时，过期结果丢弃
+
 // 编码器
 volatile long encoderCount = 0;
 long encoderBase = 0;          // 切模式用的基准
@@ -134,6 +142,7 @@ bool mpuOnline = false;   // MPU6050 是否在线（掉线时跳过跌倒检测�
 
 // 报警
 bool manualAlarm = false;
+unsigned long vibPulseEnd = 0;   // 倒计时短振脉冲的结束时刻（非阻塞：到点恢复强振）
 
 // TTS 串口
 HardwareSerial synSerial(2);
@@ -183,6 +192,17 @@ uint8_t msg_mode_normal[] = {0xD5,0xFD,0xB3,0xA3,0xC4,0xA3,0xCA,0xBD};
 uint8_t msg_mode_silent[] = {0xB0,0xB2,0xBE,0xB2,0xC4,0xA3,0xCA,0xBD};
 // "夜间模式"
 uint8_t msg_mode_night[] = {0xD2,0xB9,0xBC,0xE4,0xC4,0xA3,0xCA,0xBD};
+// 高位物体识别播报（云端 YOLO 识别后经 App BLE 中转）
+// "前方有行人"  前方有=0xC7,0xB0,0xB7,0xBD,0xD3,0xD0  行人=0xD0,0xD0,0xC8,0xCB
+uint8_t msg_ped[]   = {0xC7,0xB0,0xB7,0xBD,0xD3,0xD0,0xD0,0xD0,0xC8,0xCB};
+// "前方有车辆"  车辆=0xB3,0xB5,0xC1,0xBE
+uint8_t msg_veh[]   = {0xC7,0xB0,0xB7,0xBD,0xD3,0xD0,0xB3,0xB5,0xC1,0xBE};
+// "前方有动物"  动物=0xB6,0xAF,0xCE,0xEF
+uint8_t msg_ani[]   = {0xC7,0xB0,0xB7,0xBD,0xD3,0xD0,0xB6,0xAF,0xCE,0xEF};
+// "前方有设施"  设施=0xC9,0xE8,0xCA,0xA9
+uint8_t msg_fac[]   = {0xC7,0xB0,0xB7,0xBD,0xD3,0xD0,0xC9,0xE8,0xCA,0xA9};
+// "前方无障碍"  无障碍=0xCE,0xDE,0xD5,0xCF,0xB0,0xAD
+uint8_t msg_nobarrier[] = {0xC7,0xB0,0xB7,0xBD,0xCE,0xDE,0xD5,0xCF,0xB0,0xAD};
 
 // ====================== SYN6288 语音（非阻塞队列） ======================
 // 非阻塞设计：tts_speak 只入队即返回，不阻塞 loop()；
@@ -253,6 +273,51 @@ void setTrafficLight(int l) {
   }
 }
 
+// ====================== 高位物体识别（统一入口） ======================
+// 解析 App 返回的 "BARRIER:PED4,VEH1" / "BARRIER:NONE"。
+// 仅在数量变化时播报，避免重复。播报最高优先级类别（行人>车辆>动物>设施）。
+void setBarrier(const String& body) {
+  lastBarrierResp = millis();
+  int newPed = 0, newVeh = 0, newAni = 0, newFac = 0;
+  if (body == "NONE") {
+    // 无障碍
+  } else {
+    // 逗号分隔，每段是 缩写+数量（如 PED4,VEH1）
+    int idx = 0;
+    while (idx < body.length()) {
+      int comma = body.indexOf(',', idx);
+      String seg = (comma < 0) ? body.substring(idx) : body.substring(idx, comma);
+      seg.trim();
+      // 分离字母前缀和数字
+      int dpos = 0;
+      while (dpos < seg.length() && !isDigit(seg.charAt(dpos))) dpos++;
+      String abbr = seg.substring(0, dpos);
+      int cnt = seg.substring(dpos).toInt();
+      if (abbr == "PED") newPed = cnt;
+      else if (abbr == "VEH") newVeh = cnt;
+      else if (abbr == "ANI") newAni = cnt;
+      else if (abbr == "FAC") newFac = cnt;
+      if (comma < 0) break;
+      idx = comma + 1;
+    }
+  }
+  // 仅在数量变化时处理（避免每4秒重复播报相同结果）
+  bool changed = (newPed != barrierPed || newVeh != barrierVeh ||
+                  newAni != barrierAni || newFac != barrierFac);
+  barrierPed = newPed; barrierVeh = newVeh; barrierAni = newAni; barrierFac = newFac;
+  if (!changed) return;   // 数量没变，不播报
+
+  Serial.printf("[物体识别] 行人%d 车%d 动物%d 设施%d\n", newPed, newVeh, newAni, newFac);
+  // 按优先级播报最高的一个类别（避免一次说太多）
+  // 跌倒/主动报警时不播报障碍物（让位给报警语音）
+  if (fallDetected || manualAlarm) return;
+  if (newPed > 0)      tts_speak(msg_ped, sizeof(msg_ped));
+  else if (newVeh > 0) tts_speak(msg_veh, sizeof(msg_veh));
+  else if (newAni > 0) tts_speak(msg_ani, sizeof(msg_ani));
+  else if (newFac > 0) tts_speak(msg_fac, sizeof(msg_fac));
+  else                 tts_speak(msg_nobarrier, sizeof(msg_nobarrier));   // 从有变无，播"前方无障碍"
+}
+
 // 设置音量 0-16（发 [vN] 文字命令给 SYN6288）
 void tts_setVolume(uint8_t vol) {
   if (vol > 16) vol = 16;
@@ -278,35 +343,81 @@ void tts_init() {
   Serial.println("SYN6288 语音就绪");
 }
 
-// ====================== 蜂鸣器距离编码 ======================
-// 用频率编码障碍位置、用节奏（重复间隔）编码危险程度，事件触发、障碍消失即停。
-//   type: 1=大型(上下都有) 2=下方/低位 3=上方/悬空  danger: 0~3
-//   下方→低频(800Hz)；上方→高频(2500Hz)；上下都有→先用低频再用高频交替。
-//   危险等级越高 → 蜂鸣越密集（间隔越短），越远越稀疏。
-void playObstacleBeep(int type, int danger, unsigned long now) {
+// ====================== 报警蜂鸣（跌倒/主动报警时持续急促鸣叫） ======================
+void playAlarmBeep(unsigned long now) {
   static unsigned long lastBeep = 0;
-  static int altFlag = 0;   // 上下都有时交替高低频
-  // 危险等级越高，节奏越密集
-  unsigned long interval;
-  if (danger >= 3) interval = 120;      // 极近：急促
-  else if (danger == 2) interval = 400; // 中近：中速
-  else interval = 900;                  // 较远：缓
-  if (now - lastBeep < interval) return;
-  lastBeep = now;
-  // 频率编码位置
-  int freq;
-  if (type == 2) freq = 800;            // 下方→低频
-  else if (type == 3) freq = 2500;      // 上方→高频
-  else { freq = (altFlag ^= 1) ? 800 : 2500; }  // 上下都有→交替
-  ledcWriteTone(BUZZER_PIN, freq);
-  // 音量控制：通过设置占空比调小音量（值越小声音越小）
-  ledcWrite(BUZZER_PIN, 80);   // 占空比 80/255 ≈ 31%，降低音量
-  // 蜂鸣音长：越近越短促（让节奏感更强）
-  unsigned long dur = danger >= 3 ? 50 : (danger == 2 ? 80 : 120);
-  // 用非阻塞：记下关闭时间，由 updateBuzzer 在主循环统一关
-  // 这里用 delay 短时阻塞（≤120ms）可接受，保持简单
-  delay((int)dur);
+  static bool on = false;
+  if (now - lastBeep > 200) {     // 每200ms翻转一次，急促报警音
+    lastBeep = now;
+    on = !on;
+    if (on) {
+      ledcWriteTone(BUZZER_PIN, 2500);
+      ledcWrite(BUZZER_PIN, 120);  // 音量稍大，报警要听得见
+    } else {
+      ledcWriteTone(BUZZER_PIN, 0);
+    }
+  }
+}
+
+// ====================== 蜂鸣器连续距离编码（非阻塞状态机） ======================
+// 频率/节奏/音长随实际距离连续变化，像汽车倒车雷达：
+//   越近→音调越高、节奏越快、声音越短；越远→音调越低、节奏越慢、声音越长。
+// 低位用低频段(500~1200Hz)，高位用高频段(1500~2800Hz)，两段不重叠，闭眼可分辨。
+// 全程非阻塞：用 millis() 记录"蜂鸣该关闭的时刻"，每轮 loop() 调用一次。
+bool buzzerBeeping = false;
+unsigned long buzzerOffAt = 0;       // 当前蜂鸣应关闭的时刻
+unsigned long buzzerLastBeep = 0;    // 上一次蜂鸣起始时刻
+int buzzerAltFlag = 0;               // 上下都有时低频段/高频段交替
+
+// 强制停止蜂鸣器并复位状态（无障碍/安静模式/报警让位时调用）
+void stopObstacleBeep() {
   ledcWriteTone(BUZZER_PIN, 0);
+  buzzerBeeping = false;
+}
+
+// type: 1=大型(上下都有) 2=下方/低位 3=上方/悬空
+void playObstacleBeep(int type, unsigned long now) {
+  // 取低位/高位里更近的有效距离作为有效距离 m
+  float low  = (lowDist  > 0) ? lowDist  : 9999.0f;
+  float high = (highDist > 0) ? highDist : 9999.0f;
+  float m = (low < high) ? low : high;
+  if (m > 150.0f) m = 150.0f;
+  if (m < 0.0f) m = 0.0f;
+
+  // 归一化：m=150(远)→t=0；m=0(近)→t=1
+  float t = 1.0f - m / 150.0f;
+
+  // 频率：低位 500~1200Hz，高位 1500~2800Hz，两段不重叠
+  int freq;
+  if (type == 2) {
+    freq = (int)(500.0f + t * 700.0f);            // 500→1200
+  } else if (type == 3) {
+    freq = (int)(1500.0f + t * 1300.0f);         // 1500→2800
+  } else {
+    // 上下都有：交替使用低频段与高频段
+    freq = (buzzerAltFlag ^= 1) ? (int)(500.0f + t * 700.0f)
+                                : (int)(1500.0f + t * 1300.0f);
+  }
+
+  // 节奏间隔：远1000ms → 近100ms
+  unsigned long interval = (unsigned long)(1000.0f - t * 900.0f);
+  // 音长：远100ms → 近40ms
+  unsigned long dur = (unsigned long)(100.0f - t * 60.0f);
+
+  // 先处理"该关闭蜂鸣"：蜂鸣中且到关闭时刻 → 关
+  if (buzzerBeeping && now >= buzzerOffAt) {
+    ledcWriteTone(BUZZER_PIN, 0);
+    buzzerBeeping = false;
+  }
+
+  // 静音期且满足节奏间隔 → 发下一声（非阻塞，无 delay）
+  if (!buzzerBeeping && (now - buzzerLastBeep >= interval)) {
+    buzzerLastBeep = now;
+    ledcWriteTone(BUZZER_PIN, freq);
+    ledcWrite(BUZZER_PIN, 80);            // 占空比 80/255 ≈ 31%，降低音量
+    buzzerOffAt = now + dur;
+    buzzerBeeping = true;
+  }
 }
 
 // ====================== ESP-NOW ======================
@@ -321,34 +432,54 @@ void sendCmdToScout(int cmd) {
 }
 
 // ====================== BLE 回调 ======================
+// ⚠️ 铁律：BLE 消息可能被分包/粘包，必须按行缓冲重组，攒到 \n 才算一条完整指令。
 class ServerCallbacks : public BLEServerCallbacks {
   void onConnect(BLEServer* s) override { deviceConnected = true; Serial.println("[BLE] 手机连接"); }
   void onDisconnect(BLEServer* s) override { deviceConnected = false; s->startAdvertising(); Serial.println("[BLE] 手机断开"); }
 };
 class RxCbs : public BLECharacteristicCallbacks {
+  String rxBuffer;   // 行缓冲：攒到换行符才算一条完整指令
   void onWrite(BLECharacteristic *c) override {
     String val = c->getValue();
     if (val.length() == 0) return;
-    Serial.println("[BLE] 收到: " + val);
-    // 处理 App 下发的模式切换指令：MODE:0/1/2
-    if (val.startsWith("MODE:")) {
-      int m = val.substring(5).toInt();
-      if (m >= 0 && m <= 2) {
-        Serial.println("[BLE] App 请求切换模式");
-        setMode(m);
-      }
-    } else if (val == "ALARM:CANCEL") {
-      // App 远程取消报警
-      manualAlarm = false;
-      fallDetected = false; fallCountdown = false; fallState = 0;
-      ledcWrite(MOTOR_PIN, 0);
-      Serial.println("[BLE] App 取消报警");
-    } else if (val == "RED" || val == "YELLOW" || val == "GREEN" || val == "NONE") {
-      // App 交通灯识别结果上报
-      setTrafficLight(val == "RED" ? 1 : val == "YELLOW" ? 2 : val == "GREEN" ? 3 : 0);
+    rxBuffer += val;
+    // 按行处理：每遇到 \n 就取出一条完整指令
+    int nl;
+    while ((nl = rxBuffer.indexOf('\n')) >= 0) {
+      String line = rxBuffer.substring(0, nl);
+      rxBuffer = rxBuffer.substring(nl + 1);
+      line.trim();   // 去掉 \r 和首尾空白
+      if (line.length() == 0) continue;
+      Serial.println("[BLE] 收到: " + line);
+      handleBleLine(line);
     }
   }
 };
+// 处理一条完整 BLE 指令（已去换行/回车）
+void handleBleLine(const String& line) {
+  if (line.startsWith("MODE:")) {
+    int m = line.substring(5).toInt();
+    if (m >= 0 && m <= 2) { Serial.println("[BLE] App 请求切换模式"); setMode(m); }
+  } else if (line == "ALARM:CANCEL") {
+    manualAlarm = false;
+    clearFallAlarm();
+    Serial.println("[BLE] App 取消报警");
+  } else if (line == "RED" || line == "YELLOW" || line == "GREEN" || line == "NONE") {
+    // App 交通灯识别结果上报
+    setTrafficLight(line == "RED" ? 1 : line == "YELLOW" ? 2 : line == "GREEN" ? 3 : 0);
+  } else if (line.startsWith("BARRIER:")) {
+    // App 高位物体识别结果上报（BARRIER:PED4,VEH1 或 BARRIER:NONE）
+    setBarrier(line.substring(8));
+  } else if (line == "STATUS") {
+    // App 连接成功后立即查询状态
+    Serial.println("[BLE] App 请求状态");
+    printStatus();
+  } else if (line == "CAMERA:CAPTURE") {
+    // App 手动触发拍照
+    Serial.println("[BLE] App 请求拍照");
+    sendCmdToScout(1);
+  }
+}
 
 // ====================== 超声波 ======================
 float readDistance() {
@@ -442,18 +573,41 @@ void checkFall() {
   if (!mpuOnline) return;   // MPU 掉线时不做跌倒检测，避免误报
   switch (fallState) {
     case 0:
-      if (accMag < 0.4) { fallState = 1; fallTimer = millis(); }
+      // 阈值放宽：失重 <0.6g 进入疑似跌倒（原0.4太难触发）
+      if (accMag < 0.6) { fallState = 1; fallTimer = millis(); }
+      // 直接猛烈冲击（>3.0g）也算跌倒——有些跌倒没有明显失重阶段
+      else if (accMag > 3.0) {
+        fallState = 2; fallDetected = true; fallCountdown = true;
+        fallCountdownStart = millis(); fallVoicePlayed = false;
+        encoderBaseFall = encoderCount;
+        Serial.printf("[跌倒] 确认(直接冲击%.2fg)！开始30秒倒计时\n", accMag);
+        sendBLE("FALL:1\n");
+      }
       break;
     case 1:
-      if (accMag > 2.5) {
+      // 冲击阈值放宽到 2.0g（原2.5太高，软地面/缓冲摔倒容易漏）
+      if (accMag > 2.0) {
         fallState = 2; fallDetected = true; fallCountdown = true;
         fallCountdownStart = millis(); fallVoicePlayed = false;
         encoderBaseFall = encoderCount;  // 记录跌倒起始基准，用于取消检测
-        Serial.println("[跌倒] 确认！开始30秒倒计时");
+        Serial.printf("[跌倒] 确认(失重+冲击%.2fg)！开始30秒倒计时\n", accMag);
         sendBLE("FALL:1\n");
-      } else if (millis() - fallTimer > 2000) fallState = 0;
+      } else if (millis() - fallTimer > 1500) fallState = 0;  // 窗口缩到1.5s
       break;
   }
+}
+
+// 统一清除跌倒/报警状态：复位所有跌倒标志 + 停振动 + 同步切模式基准。
+// 倒计时阶段、已确认报警阶段、三连按取消、BLE 取消都走这里，保证状态彻底干净。
+void clearFallAlarm() {
+  fallDetected = false;
+  fallCountdown = false;
+  fallState = 0;
+  fallVoicePlayed = false;
+  vibPulseEnd = 0;
+  encoderBase = encoderCount;   // 同步切模式基准，避免取消旋转被误判为切模式
+  ledcWrite(MOTOR_PIN, 0);
+  Serial.println("[报警] 已清除跌倒/报警状态");
 }
 
 // ====================== 电量 ======================
@@ -466,8 +620,21 @@ float readBattery() {
 }
 
 // ====================== 编码器中断 ======================
-void IRAM_ATTR encodeA() { if (digitalRead(ENC_A)==digitalRead(ENC_B)) encoderCount++; else encoderCount--; }
-void IRAM_ATTR encodeB() { if (digitalRead(ENC_A)==digitalRead(ENC_B)) encoderCount--; else encoderCount++; }
+// ====================== 编码器中断 ======================
+// 加 3ms 消抖：EC11 机械触点抖动会产生多余脉冲，直接计数不稳
+volatile unsigned long encLastIsr = 0;
+void IRAM_ATTR encodeA() {
+  unsigned long t = millis();
+  if (t - encLastIsr < 3) return;   // 消抖窗口
+  encLastIsr = t;
+  if (digitalRead(ENC_A)==digitalRead(ENC_B)) encoderCount++; else encoderCount--;
+}
+void IRAM_ATTR encodeB() {
+  unsigned long t = millis();
+  if (t - encLastIsr < 3) return;
+  encLastIsr = t;
+  if (digitalRead(ENC_A)==digitalRead(ENC_B)) encoderCount--; else encoderCount++;
+}
 
 // ====================== 按钮（轮询状态机，代替中断计数） ======================
 // 编码器机械开关抖动又长又脏，中断边沿计数容易漏/多计。
@@ -589,6 +756,8 @@ void processCommand(String cmd) {
     Serial.println("  btnflip   翻转按钮极性（按下电平判断反了时用）");
     Serial.println("  mode <0-2> 切换模式(0正常 1安静 2夜间)");
     Serial.println("  light <RED|GREEN|YELLOW|NONE>  模拟交通灯识别结果");
+    Serial.println("  barrier       手动发障碍物检测请求");
+    Serial.println("  bar PED2,VEH1  模拟障碍物识别结果（演示用）");
     Serial.println("  led       灯带测试（红→绿→蓝→白 各1秒）");
     Serial.println("  fall      模拟跌倒(触发30秒倒计时)");
     Serial.println("  alarm     切换主动报警");
@@ -665,6 +834,16 @@ void processCommand(String cmd) {
     else if (l == "GREEN") setTrafficLight(3);
     else if (l == "NONE") setTrafficLight(0);
     else Serial.println("用法: light <RED|GREEN|YELLOW|NONE>");
+  } else if (cmd == "barrier") {
+    // 手动触发障碍物检测请求（等 App 返回 BARRIER:xxx）
+    lastBarrierReq = millis();
+    sendBLE("barrierdetect\n");
+    Serial.println("[物体识别] 已发检测请求，等待 App 返回 BARRIER:xxx");
+  } else if (cmd.startsWith("bar ")) {
+    // 模拟 App 返回结果（演示用，不经云端）
+    String body = cmd.substring(4); body.trim();
+    setBarrier(body);
+    Serial.printf("[物体识别] 模拟返回: BARRIER:%s\n", body.c_str());
   } else if (cmd == "fall") {
     Serial.println(">>> 模拟跌倒，开始30秒倒计时（旋转旋钮或按按钮可取消）");
     fallDetected = true; fallCountdown = true; fallState = 2;
@@ -681,8 +860,11 @@ void processCommand(String cmd) {
       sendBLE("ALARM:CANCEL\n"); ledcWrite(MOTOR_PIN, 0);
     }
   } else if (cmd == "photo" || cmd == "capture") {
-    Serial.println("拍照：通知前哨预热，并通知手机拉取 /capture");
-    sendCmdToScout(1); sendBLE("CAMERA:CAPTURE\n");
+    Serial.println("拍照：通知前哨预热，并请求云端识别（物体/交通灯）");
+    sendCmdToScout(1);
+    sendBLE("CAMERA:CAPTURE\n");
+    sendBLE("barrierdetect\n");
+    lastBarrierReq = millis();
   } else if (cmd == "pause") {
     autoLoop = false;
     ledcWrite(MOTOR_PIN, 0);
@@ -825,30 +1007,44 @@ void loop() {
     fusedLevel = danger;
     updateMotor(danger);
 
-    // 蜂鸣器距离编码：障碍存在时按节奏发短音（事件触发、障碍消失即停）。
-    // 正常/夜间模式响；安静模式不响蜂鸣器（仅振动），避免吵闹。
-    if (workMode != 1 && type != 0 && danger != 0 && !fallDetected && !manualAlarm) {
-      playObstacleBeep(type, danger, now);
-    } else {
-      ledcWriteTone(BUZZER_PIN, 0);  // 安静模式或无障碍时关蜂鸣器
-    }
-
     // 调试打印：每 500ms 持续打印一次，便于实时观察数值变化
     static unsigned long lastPrint = 0;
     if (now - lastPrint > 500) {
       lastPrint = now;
-      const char* typeName = (type==1)?"大型(上下都有)":(type==2)?"低位(下方)":(type==3)?"悬空(上方)":"安全";
-      const char* beepName = (type==2)?"低频800Hz":(type==3)?"高频2500Hz":(type==1)?"交替800/2500Hz":"静音";
-      Serial.printf("[测距] 低=%5.0f 高=%5.0f 类型=%-6s 等级=%d 模式=%s 蜂鸣=%s\n",
+      Serial.printf("[测距] 低=%5.0f 高=%5.0f 类型=%-6s 等级=%d 模式=%s\n",
         lowDist, highDist,
-        obstacleName(type).c_str(), danger, modeNames[workMode],
-        (workMode!=1 && type!=0 && danger!=0) ? beepName : "关");
+        obstacleName(type).c_str(), danger, modeNames[workMode]);
+    }
+  }
+
+  // ---- 蜂鸣器连续距离编码（每轮 loop 都跑，节奏才跟得上 100ms）----
+  // 安静模式：所有蜂鸣器全静音（障碍音+报警音都不响），只靠振动反馈。
+  // 跌倒/主动报警时不响障碍音（让位给报警蜂鸣）；无障碍停。
+  {
+    int btype = fuseDistance(lowDist, highDist);
+    if (autoLoop && workMode != 1 && btype != 0 && !fallDetected && !manualAlarm) {
+      playObstacleBeep(btype, now);
+    } else {
+      stopObstacleBeep();
     }
   }
 
   // ---- 灯带更新（每次循环都更新，呼吸灯/闪烁需要高频刷新）----
   int curDanger = (fallDetected || manualAlarm) ? 3 : fusedLevel;
   updateLEDStrip(workMode, curDanger);
+
+  // ---- 报警蜂鸣：跌倒/主动报警时持续急促鸣叫（高频调用，不限于测距周期）----
+  // 安静模式下不响蜂鸣器（但跌倒语音播报照常响），只靠振动反馈
+  if ((fallDetected || manualAlarm) && workMode != 1) playAlarmBeep(now);
+  else if (fallDetected || manualAlarm) stopObstacleBeep();  // 安静模式：关蜂鸣，振动仍在
+
+  // ---- 物体/交通灯识别：只在长按旋钮时触发（见按钮长按块），这里不做周期请求 ----
+  // 超时丢弃：12秒没收到回应，清零上次结果，避免一直显示旧数据
+  if (lastBarrierReq > 0 && lastBarrierResp < lastBarrierReq &&
+      now - lastBarrierReq > BARRIER_REQ_TIMEOUT) {
+    Serial.println("[物体识别] 请求超时，丢弃");
+    lastBarrierReq = 0;
+  }
 
   // 状态汇总：不再每 3 秒自动刷屏，改为仅在跌倒状态变化时打印，或用 status 命令查看
   static int lastFallState = -1;
@@ -904,30 +1100,34 @@ void loop() {
     sendBLE(msg);
   }
 
-  // ---- 按钮长按 1.5 秒 → 拍照 ----
+  // ---- 按钮长按 1.5 秒 → 拍照 + 请求云端识别（物体+交通灯一次返回）----
   if (buttonHeld && !longPressTriggered && (now - buttonDownTime > LONGPRESS_MS)) {
     longPressTriggered = true;
-    Serial.println("[长按] 拍照！通知前哨");
+    Serial.println("[长按] 拍照！通知前哨 + 请求云端识别（物体/交通灯）");
     // 短振一下作为确认反馈（按住 1.5 秒时能感觉到）
     ledcWrite(MOTOR_PIN, 200); delay(150); ledcWrite(MOTOR_PIN, 0);
-    sendCmdToScout(1);
-    for (int i = 0; i < 3; i++) { sendBLE("CAMERA:CAPTURE\n"); delay(80); }
+    sendCmdToScout(1);                                   // ESP-NOW 通知前哨拍照
+    sendBLE("CAMERA:CAPTURE\n");                         // 通知 App 拉取照片
+    sendBLE("barrierdetect\n");                          // 请求云端识别，App 调 /detect 同时回 BARRIER:xxx 和交通灯
+    lastBarrierReq = now;                                // 记录请求时刻，纳入超时管理
   }
 
   // ---- 连按判定：松开超过 800ms 且期间无新点击 → 结算次数 ----
   if (buttonClickCount > 0 && !buttonHeld && (now - lastClickTime > CLICK_GAP_MS)) {
     if (buttonClickCount >= 3) {
-      manualAlarm = !manualAlarm;
-      if (manualAlarm) {
+      // 报警中（跌倒/主动）→ 三连按一律取消；否则 → 触发主动报警
+      if (fallDetected || manualAlarm) {
+        Serial.println("[三连按] 取消报警（跌倒/主动一并清除）");
+        manualAlarm = false;
+        clearFallAlarm();                 // 复位 fallDetected/fallState/振动等
+        for (int i = 0; i < 3; i++) { sendBLE("ALARM:CANCEL\n"); delay(80); }
+        Serial.println("报警已取消，振动停止");
+      } else {
+        manualAlarm = true;
         Serial.println("[三连按] 主动报警！");
         for (int i = 0; i < 3; i++) { sendBLE("ALARM:MANUAL\n"); delay(100); }
         ledcWrite(MOTOR_PIN, 255);
         tts_speak(msg_alarmed, sizeof(msg_alarmed));
-      } else {
-        Serial.println("[三连按] 取消报警");
-        for (int i = 0; i < 3; i++) { sendBLE("ALARM:CANCEL\n"); delay(80); }
-        ledcWrite(MOTOR_PIN, 0);
-        Serial.println("报警已取消，振动停止");
       }
     } else {
       Serial.printf("[按钮] %d 连按（无动作，需 3 连按触发报警）\n", buttonClickCount);
@@ -942,53 +1142,62 @@ void loop() {
     setMode((workMode + 1) % 3);
   }
 
-  // ---- 跌倒 30 秒倒计时 ----
-  if (fallCountdown) {
+  // ---- 跌倒报警处理（倒计时阶段 + 30秒确认后的持续报警阶段，均可取消）----
+  // 关键：只要 fallDetected 为真就跑这段，确认后 fallCountdown=false 但 fallDetected
+  //       仍 true，此时仍需能取消——否则会卡死在报警状态、模式也切不动。
+  if (fallDetected) {
     static unsigned long lastPrompt = 0;
     static int lastSec = -1;
-    int remaining = 30 - (int)((now - fallCountdownStart) / 1000);
+    static bool confirmedSent = false;
 
-    // 进入跌倒时播报一次（合成一帧发送，句间由逗号自然停顿，无空隙）
+    // 进入跌倒时播报一次（合成一帧，句间逗号自然停顿）
     if (!fallVoicePlayed) {
       fallVoicePlayed = true;
+      confirmedSent = false;          // 新一次跌倒，重置确认标志
+      lastSec = -1;                   // 重置倒计时秒数
       tts_speak(msg_fall_full, sizeof(msg_fall_full));
     }
 
-    // 每秒振动短促 + 串口提示（无蜂鸣器，用振动反馈倒计时）
-    if (remaining != lastSec && remaining > 0) {
-      lastSec = remaining;
-      Serial.printf("[跌倒] 倒计时 %d秒\n", remaining);
-      ledcWrite(MOTOR_PIN, 200);
-      delay(60);
-      ledcWrite(MOTOR_PIN, 255);  // 跌倒期间持续强振
+    // —— 倒计时阶段（30秒内）——
+    if (fallCountdown) {
+      int remaining = 30 - (int)((now - fallCountdownStart) / 1000);
+
+      // 每秒短振一下作为倒计时反馈（非阻塞：60ms 后自动恢复强振，不卡主循环）
+      if (remaining != lastSec && remaining > 0) {
+        lastSec = remaining;
+        Serial.printf("[跌倒] 倒计时 %d秒\n", remaining);
+        ledcWrite(MOTOR_PIN, 200);
+        vibPulseEnd = now + 60;        // 60ms 后恢复强振
+      }
+      if (vibPulseEnd && now >= vibPulseEnd) {
+        ledcWrite(MOTOR_PIN, 255);     // 跌倒期间持续强振
+        vibPulseEnd = 0;
+      }
+
+      // 每 3 秒重发 FALL:1（提醒 App 持续显示）
+      if (now - lastPrompt > 3000) {
+        lastPrompt = now;
+        sendBLE("FALL:1\n");
+      }
+
+      // 30 秒到 → 确认家属报警（只发一次，非阻塞，不再 delay）
+      if (now - fallCountdownStart > 30000 && !confirmedSent) {
+        confirmedSent = true;
+        fallCountdown = false;         // 转入"已确认持续报警"阶段，但 fallDetected 仍 true
+        Serial.println("[跌倒] 30秒到！自动家属报警（旋转旋钮/按按钮/三连按可取消）");
+        sendBLE("FALL:CONFIRMED\n");
+        ledcWrite(MOTOR_PIN, 255);
+        tts_speak(msg_alarmed, sizeof(msg_alarmed));
+      }
     }
 
-    // 每 3 秒重发 FALL:1
-    if (now - lastPrompt > 3000) {
-      lastPrompt = now;
-      sendBLE("FALL:1\n");
-    }
-
-    // 30 秒到 → 确认报警
-    if (now - fallCountdownStart > 30000) {
-      fallCountdown = false;
-      Serial.println("[跌倒] 30秒到！自动家属报警");
-      for (int i = 0; i < 3; i++) { sendBLE("FALL:CONFIRMED\n"); delay(100); }
-      ledcWrite(MOTOR_PIN, 255);
-      tts_speak(msg_alarmed, sizeof(msg_alarmed));
-    }
-
-    // 旋钮或按键取消（用跌倒起始基准，与切模式互不影响）
+    // —— 旋钮或按键取消（倒计时阶段、已确认报警阶段均生效）——
+    // 旋钮转 4 格、或任意一次按钮点击，立即取消。单次按钮点击即可取消，对盲人更友好。
     if (abs(encoderCount - encoderBaseFall) >= 4 || buttonClickCount > 0) {
-      fallCountdown = false;
-      fallDetected = false;
-      fallState = 0;
       buttonClickCount = 0;
-      // 同步切模式基准，避免取消动作被误判为切模式
-      encoderBase = encoderCount;
       Serial.println("[跌倒] 已取消");
+      clearFallAlarm();
       sendBLE("FALL:CANCELLED\n");
-      ledcWrite(MOTOR_PIN, 0);
     }
   }
 }
