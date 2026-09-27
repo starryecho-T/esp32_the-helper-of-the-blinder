@@ -47,7 +47,7 @@ jobs:
             rm -rf "$dest"
             mkdir -p "$dest"
             cp app/webapp/*.html "$dest/"
-            cp -r app/webapp/css app/webapp/js "$dest/"
+            cp -r app/webapp/css app/webapp/js app/webapp/audio "$dest/"
           done
           echo "打包的页面文件："
           find app/android/apk-blind/app/src/main/assets/webapp -type f | sort
