@@ -512,7 +512,19 @@ void updateMotor(int level) {
 
 // ====================== BLE 发送 ======================
 void sendBLE(String msg) {
-  if (deviceConnected) { pTxCharacteristic->setValue(msg.c_str()); pTxCharacteristic->notify(); }
+  if (!deviceConnected) return;
+  // BLE 单次通知载荷上限为 MTU-3 字节（未协商大 MTU 时仅 20 字节可用），超长会被
+  // 截断丢字节：App 端按 '\n' 重组行后，相邻字段拼接成 TYPE:MODE:0 之类的脏行，
+  // 表现为「障碍物」栏偶发显示乱码。这里统一按 20 字节分片发送，任何 MTU 下都
+  // 安全；片间小憩，避免 BLE 缓冲拥堵丢包。
+  const char* p = msg.c_str();
+  size_t len = msg.length();
+  for (size_t off = 0; off < len; off += 20) {
+    size_t n = (len - off < 20) ? (len - off) : 20;
+    pTxCharacteristic->setValue((uint8_t*)(p + off), n);
+    pTxCharacteristic->notify();
+    if (off + 20 < len) delay(6);
+  }
 }
 
 // ====================== 展示 / 调试 ======================

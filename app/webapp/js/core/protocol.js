@@ -48,6 +48,9 @@
   var MODE_BY_INDEX = ['NORMAL', 'SILENT', 'NIGHT'];   // MODE:0/1/2（演示说明 §5.2）
   var MODE_INDEX_BY_NAME = { NORMAL: 0, SILENT: 1, NIGHT: 2 };
 
+  /** 固件 obstacleName() 只会产生的 4 种障碍物类型（parseStatus 校验用） */
+  var VALID_TYPES = ['SAFE', 'LARGE', 'LOW', 'HIGH'];
+
   /**
    * 解析一行盲杖消息。
    * @param {string} line 单行文本（不带换行符）
@@ -105,6 +108,13 @@
     });
     if (!hits) return null;
 
+    // —— 传输损坏防护 ——
+    // BLE 通知丢字节/截断后按行重组，会把相邻字段拼接成 TYPE:MODE:0、TYPE:DIST:85 之类的脏值，
+    // 曾导致「障碍物」栏直接显示原始乱码。固件只会发上面 4 种类型，
+    // 值非法即判定整行损坏，丢弃（500ms 后下一包就到，不损失信息）。
+    var rawType = map.TYPE || '';
+    if (rawType && VALID_TYPES.indexOf(rawType) < 0) return null;
+
     var s = {
       dist:  num(map.DIST),
       high:  num(map.HIGH),
@@ -122,12 +132,12 @@
     return s;
   }
 
-  /** MODE 字段可能是 0/1/2 或名称 */
+  /** MODE 字段可能是 0/1/2 或名称；未知值返回 ''，不把脏值透传到界面 */
   function normalizeMode(v) {
     if (v === undefined || v === null || v === '') return '';
     if (MODE_INDEX_BY_NAME[v] !== undefined) return v;
     var idx = parseInt(v, 10);
-    return MODE_BY_INDEX[idx] !== undefined ? MODE_BY_INDEX[idx] : v;
+    return MODE_BY_INDEX[idx] !== undefined ? MODE_BY_INDEX[idx] : '';
   }
 
   function num(v) {
