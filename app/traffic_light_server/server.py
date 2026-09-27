@@ -82,7 +82,7 @@ DEVICE_TOKEN = os.environ.get('DEVICE_TOKEN', '')
 # 家属端查看画面的鉴权：留空则任何人都能看，建议设一个（与 DEVICE_TOKEN 不同）
 VIEW_TOKEN = os.environ.get('VIEW_TOKEN', '')
 # 缓存帧最长可用时间（秒）。超过则认为设备离线/断流
-# 必须 > 前哨推流间隔（当前固件 30 秒），否则 /detect、/snapshot 会在帧过期窗口报错
+# 必须 > 前哨推流间隔（当前固件 2 秒，espnow_sender.ino 的 UPLOAD_INTERVAL_MS），否则 /detect、/snapshot 会在帧过期窗口报错
 FRAME_MAX_AGE = float(os.environ.get('FRAME_MAX_AGE', '45'))
 # 缓存帧落盘路径，便于调试查看（重启后仍保留最后一帧）
 FRAME_PATH = os.environ.get('FRAME_PATH', 'latest.jpg')

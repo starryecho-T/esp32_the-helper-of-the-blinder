@@ -5,7 +5,7 @@
  *   1. 超声波高位测距 → ESP-NOW 发给盲杖
  *   2. 接收盲杖拍照命令 → 拍照 → WiFi 传给手机
  *   3. 摄像头 Web Server（手机可直接访问 /capture 拍照、/stream 实时）
- *   4. 主动推流到云端：每 1.2s POST 一帧 JPEG 到云服务器 /upload，
+ *   4. 主动推流到云端：每 2s POST 一帧 JPEG 到云服务器 /upload（UPLOAD_INTERVAL_MS），
  *      云端缓存最新帧，手机 App 再调 GET /detect 识别（物体+交通灯）
  *   5. mDNS：手机可访问 http://scout.local/capture
  *
@@ -366,7 +366,7 @@ void setup() {
 
   Serial.println("==============================================");
   Serial.println("初始化完成。手机访问 http://scout.local/capture 或 http://" + WiFi.localIP().toString() + "/capture 拍照");
-  Serial.println("每1.2秒自动推流到云端 " + String(SERVER_HOST));
+  Serial.println("每" + String(UPLOAD_INTERVAL_MS / 1000) + "秒自动推流到云端 " + String(SERVER_HOST));
   Serial.println("串口输入 'dist' 可诊断超声波");
 }
 
