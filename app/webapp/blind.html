@@ -112,6 +112,19 @@
       <summary style="font-size:18px;font-weight:700">调试日志</summary>
       <div class="log" id="logView" aria-label="调试日志"></div>
     </details>
+
+    <!-- ===== 手动灯色（演示） ===== -->
+    <section class="card" aria-label="手动灯色">
+      <h2>手动灯色（演示）</h2>
+      <p style="font-size:16px;color:var(--c-text-sub);margin:0 0 4px">
+        点击后立即把对应灯色发给盲杖：盲杖语音播报，页面同步显示。
+      </p>
+      <div class="btn-grid-3">
+        <button class="btn btn-danger" id="btnLightRed" disabled>红灯</button>
+        <button class="btn btn-warning" id="btnLightYellow" disabled>黄灯</button>
+        <button class="btn btn-success" id="btnLightGreen" disabled>绿灯</button>
+      </div>
+    </section>
   </main>
 
   <div class="toast-area" id="toastArea" aria-live="polite"></div>

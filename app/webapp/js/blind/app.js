@@ -48,7 +48,8 @@
     $('bleDevice').className = 'value ' + (connected ? '' : 'muted');
     $('btnConnect').disabled = connected || connecting;
     $('btnDisconnect').disabled = !connected && !connecting; // 连接中/重连中也可手动取消
-    ['btnMode0', 'btnMode1', 'btnMode2', 'btnCapture', 'btnBarrier', 'btnAlarmCancel'].forEach(function (id) {
+    ['btnMode0', 'btnMode1', 'btnMode2', 'btnCapture', 'btnBarrier', 'btnAlarmCancel',
+     'btnLightRed', 'btnLightYellow', 'btnLightGreen'].forEach(function (id) {
       $(id).disabled = !connected;
     });
   }
@@ -205,6 +206,26 @@
     $('lightBox').className = 'light-box ' + (LIGHT_BOX_CLS[r.color] || '');
   }
   $('btnCapture').addEventListener('click', runDetect);
+
+  // ================= 手动灯色（演示） =================
+  // 不走云端识别，直接把所选灯色回传盲杖（RED/YELLOW/GREEN）。
+  // 盲杖固件 setTrafficLight() 收到后语音播报（红灯请等待等），
+  // 并在周期状态包回显 LIGHT:红灯。注意：仅灯色变化时盲杖才播报，
+  // 连续点同一颜色不会重复播。
+  function sendManualLight(color) {
+    if (!ble.isConnected()) { toast('请先连接智能盲杖', 'warning'); return; }
+    showLight({ color: color, confidence: '手动' });
+    var t = cfg.get().tts;
+    var voice = color === 'RED' ? t.redText : color === 'YELLOW' ? t.yellowText : t.greenText;
+    bus.emit(EVENTS.VOICE, { message: voice });
+    tts.speak(voice, { force: true });
+    ble.writeLine(protocol.cmdLightResult(color));   // 回传盲杖
+    toast('已发送：' + LIGHT_CN[color], 'success');
+    log('手动灯色 ' + color + ' → 已回传盲杖');
+  }
+  $('btnLightRed').addEventListener('click', function () { sendManualLight('RED'); });
+  $('btnLightYellow').addEventListener('click', function () { sendManualLight('YELLOW'); });
+  $('btnLightGreen').addEventListener('click', function () { sendManualLight('GREEN'); });
 
   // ================= 障碍物检测闭环 =================
   // 触发：盲杖 BLE 发 barrierdetect（protocol 解析为 BARRIER_DETECT 事件）或点「手动检测」。

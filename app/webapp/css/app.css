@@ -103,9 +103,13 @@ html, body {
 .btn-danger { color: var(--c-danger); border-color: var(--c-danger); background: #ffecec; }
 .btn-danger:active { background: #ffd8d8; }
 .btn-success { color: var(--c-success); border-color: var(--c-success); background: #e8f9ef; }
+.btn-warning { color: var(--c-warning); border-color: var(--c-warning); background: #fff6de; }
+.btn-warning:active { background: #ffe9b3; }
 
 .btn-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 .btn-grid .btn { margin: 0; }
+.btn-grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+.btn-grid-3 .btn { margin: 0; }
 
 /* ---------- 状态徽章 ---------- */
 .badge {
