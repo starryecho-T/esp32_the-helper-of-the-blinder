@@ -280,15 +280,16 @@
 
   // 「测试语音」：手动校验手机 TTS。点击是用户手势，同时完成移动端语音解锁
   // （iOS Safari / 微信内置浏览器不解锁时，蓝牙事件触发的后台播报会无声）。
+  // 不支持在线合成的浏览器（部分微信/国产内核）会自动改播预录音频。
   $('btnVoiceTest').addEventListener('click', function () {
     if (tts.unlock) tts.unlock();
     if (!tts.isSupported()) {
-      toast('此浏览器不支持语音合成，建议改用 Chrome / Safari 打开', 'danger');
-      return;
+      log('此浏览器不支持在线语音合成，改用预录音频');
+      toast('此浏览器不支持在线语音，已改用预录音频播放', 'warning');
     }
     tts.speak('语音功能正常，手机将代读盲杖播报', { force: true });
     log('手动语音测试已播放');
-    toast('已播放测试语音，若无声请调大媒体音量后重试', 'info');
+    if (tts.isSupported()) toast('已播放测试语音，若无声请调大媒体音量后重试', 'info');
   });
 
   // ================= 障碍物检测闭环 =================

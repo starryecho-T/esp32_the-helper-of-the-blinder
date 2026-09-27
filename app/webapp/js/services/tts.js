@@ -29,6 +29,44 @@
     } catch (e) { /* 个别浏览器对空白文本抛错，忽略 */ }
   }
 
+  // ================= 音频兜底（预录 WAV） =================
+  // 微信内置浏览器 / 部分国产浏览器不带 speechSynthesis，无法在线合成语音；
+  // 此时改播 app/webapp/audio/ 下的预录文件（Windows Huihui 生成，文案与播报一一对应）。
+  // 障碍摘要是动态文本，按前缀匹配通用提示音；匹配不到的文本跳过并告警。
+  var AUDIO_DIR = 'audio/';
+  var AUDIO_MAP = {
+    '语音功能正常，手机将代读盲杖播报': 'voice-ok',
+    '正常模式': 'mode-normal',
+    '安静模式': 'mode-quiet',
+    '夜间模式': 'mode-night',
+    '已报警': 'alarmed',
+    '电池电量低': 'low-battery',
+    '您似乎跌倒了，三十秒后自动报警，拨动旋钮取消': 'fall',
+    '检测到红灯，请停止前进': 'light-red',
+    '检测到黄灯，请注意': 'light-yellow',
+    '检测到绿灯，可以通行': 'light-green',
+    '未检测到交通灯': 'light-none',
+    '未检测到障碍物': 'barrier-none'
+  };
+  var audioEl = null;
+  function speakAudio(text) {
+    var key = AUDIO_MAP[text];
+    if (!key && /^前方障碍：/.test(text)) key = 'barrier';
+    if (!key) {
+      console.warn('[tts] 无预录音频，跳过：' + text);
+      return false;
+    }
+    try {
+      if (audioEl) audioEl.pause();
+      audioEl = new global.Audio(AUDIO_DIR + key + '.wav');
+      audioEl.play().catch(function (e) { console.warn('[tts] 音频播放失败：', e); });
+      return true;
+    } catch (e) {
+      console.warn('[tts] 音频播放异常：', e);
+      return false;
+    }
+  }
+
   /**
    * 播报一段中文文本。
    * @param {string} text
@@ -36,25 +74,27 @@
    */
   function speak(text, opts) {
     opts = opts || {};
-    if (!isSupported()) {
-      console.warn('[tts] 浏览器不支持语音合成，跳过：' + text);
+    if (!config.get().tts.enabled) return;
+    if (!isSupported()) {          // 浏览器无语音合成 → 播预录音频
+      speakAudio(text);
       return;
     }
-    if (!config.get().tts.enabled) return;
     if (opts.force) cancel();
 
     var u = new global.SpeechSynthesisUtterance(text);
     u.lang = 'zh-CN';
     u.rate = opts.rate != null ? opts.rate : 1.0;
     u.pitch = opts.pitch != null ? opts.pitch : 1.0;
-    // 播报失败上报页面（如 not-allowed / synthesis-failed），便于现场排查无声问题
+    // 播报失败上报页面（如 not-allowed / synthesis-failed），便于现场排查无声问题；
+    // 失败时再兜底播预录音频（微信等浏览器合成被禁用/失败的场景）
     u.onerror = function (ev) {
       var code = (ev && ev.error) ? ev.error : 'unknown';
       console.warn('[tts] 语音播报失败(' + code + ')：' + text);
+      speakAudio(text);
       if (bus === null) bus = (global.SmartCane && global.SmartCane.bus) || false;
       if (bus) bus.emit('ui:notify', {
-        message: '语音播报失败(' + code + ')，请点一次「测试语音」解锁后重试',
-        type: 'danger'
+        message: '在线语音失败(' + code + ')，已尝试播放预录语音',
+        type: 'warning'
       });
     };
 
