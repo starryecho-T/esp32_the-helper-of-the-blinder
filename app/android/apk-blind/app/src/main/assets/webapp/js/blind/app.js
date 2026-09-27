@@ -102,6 +102,11 @@
     $('caneMode').className = 'value ' + (mode ? '' : 'muted');
   }
 
+  // 绑定三个模式按钮（BUGFIX：此前只定义了 setMode 却从未绑定 click，点按钮无任何反应）
+  $('btnMode0').addEventListener('click', function () { setMode(0); });   // 日常模式
+  $('btnMode1').addEventListener('click', function () { setMode(1); });   // 安静模式
+  $('btnMode2').addEventListener('click', function () { setMode(2); });   // 夜间模式
+
   // ================= 盲杖数据流 =================
   bus.on(EVENTS.BLE_DATA, function (e) {
     log('← ' + e.line);
