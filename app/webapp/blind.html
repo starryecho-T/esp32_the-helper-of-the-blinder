@@ -71,7 +71,8 @@
         <div class="light-color" id="lightColor" aria-live="assertive">等待图片</div>
         <div class="light-conf" id="lightConf">置信度：--</div>
       </div>
-      <button class="btn" id="btnCapture" disabled>手动识别一次</button>
+      <button class="btn hold-btn" id="btnCapture" disabled>长按1秒·灯色+障碍双检</button>
+      <p class="muted">长按满 1 秒松手即测：未识别到交通灯不播报；检测到障碍会播具体名称（行人、狗…）。盲杖按钮长按同样触发。</p>
     </section>
 
     <!-- ===== 障碍物检测 ===== -->
@@ -82,7 +83,7 @@
         <div class="barrier-counts" id="barrierCounts">行人 0　车辆 0　动物 0　静态设施 0</div>
         <div class="barrier-detail" id="barrierDetail">--</div>
       </div>
-      <button class="btn" id="btnBarrier" disabled>手动检测一次</button>
+      <button class="btn" id="btnBarrier" disabled>仅检测障碍物</button>
     </section>
 
     <!-- ===== 位置与上传 ===== -->

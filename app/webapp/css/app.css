@@ -223,3 +223,12 @@ html.font-xlarge { font-size: 22px; }
 html.font-xlarge .value { font-size: 26px; }
 html.font-xlarge .btn { font-size: 23px; }
 
+/* ===== 双检长按按钮：屏蔽移动端长按系统菜单/文字选中/滚动误触 ===== */
+.hold-btn {
+  -webkit-touch-callout: none;          /* iOS Safari 长按不弹放大镜/菜单 */
+  -webkit-user-select: none;
+  user-select: none;
+  touch-action: none;                   /* 按住期间不触发页面滚动 */
+}
+p.muted { color: #888; font-size: 14px; margin: 6px 0 0; }
+
